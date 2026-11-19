@@ -38,13 +38,27 @@ die() { printf '\033[1;31m[jincode] error:\033[0m %s\n' "$*" >&2; exit 1; }
 # ── 1. toolchain ───────────────────────────────────────────────────────────
 if [[ -n "${PREFIX:-}" && "$PREFIX" == *com.termux* ]]; then
   log "Termux detected ($PREFIX)"
-  command -v pkg >/dev/null 2>&1 && { pkg update -y; pkg install -y nodejs git; } || \
-    die "pkg not available — install Node.js >= 22 and git manually"
+  if command -v pkg >/dev/null 2>&1; then
+    pkg update -y || log "warning: 'pkg update' reported errors — continuing with current package lists"
+    if ! pkg install -y nodejs git; then
+      # A broken unrelated package (e.g. a post-install script that fails) leaves
+      # dpkg half-configured and makes 'pkg install' exit non-zero even when
+      # nodejs/git were unpacked. Try to repair dpkg, then retry once.
+      log "warning: 'pkg install' reported errors — repairing the package database and retrying"
+      dpkg --configure -a || log "warning: dpkg still has unconfigured packages (see the list above)"
+      pkg install -y nodejs git || log "warning: 'pkg install' still failing — checking node/git directly"
+    fi
+  else
+    log "warning: 'pkg' not found — checking node/git directly"
+  fi
 else
   log "non-Termux shell — assuming Node.js >= 22 and git are already installed"
 fi
 
-command -v node >/dev/null 2>&1 || die "node not found — install Node.js >= 22 (Termux: pkg install nodejs)"
+if ! command -v git >/dev/null 2>&1; then
+  die "git not found — Termux: pkg install git (if pkg keeps failing, see termux/README.md > Troubleshooting)"
+fi
+command -v node >/dev/null 2>&1 || die "node not found — Termux: pkg install nodejs. If pkg fails with a dpkg/libicu error, run 'pkg upgrade -y' then 'dpkg --configure -a' and re-run this script (see termux/README.md > Troubleshooting)"
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [[ "$NODE_MAJOR" -lt 22 ]]; then
   die "Node.js $(node -v) is too old — JinCode needs Node.js >= 22 (24.9+ recommended)"
