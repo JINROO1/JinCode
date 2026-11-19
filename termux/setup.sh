@@ -20,6 +20,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HARNESS_COMMIT="$(tr -d '[:space:]' < "$SCRIPT_DIR/HARNESS_COMMIT")"
 PATCH_FILE="$SCRIPT_DIR/patches/jincode-harness.patch"
+if [[ ! "$HARNESS_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "setup.sh: termux/HARNESS_COMMIT must be a full 40-character commit SHA (found: '$HARNESS_COMMIT')" >&2
+  exit 1
+fi
 PROFILE_NAME="jincode"
 
 SKIP_BUILD=0
@@ -88,7 +92,11 @@ if [[ ! -d "$HARNESS_DIR/.git" ]]; then
       && git checkout -q "$HARNESS_COMMIT" ) \
     || die "could not check out the pinned harness commit"
 else
-  log "reusing existing harness checkout at $HARNESS_DIR"
+  HEAD_NOW="$(cd "$HARNESS_DIR" && git rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [[ "$HEAD_NOW" != "$HARNESS_COMMIT" ]]; then
+    die "$HARNESS_DIR is at $HEAD_NOW, expected $HARNESS_COMMIT. Remove it (rm -rf \"$HARNESS_DIR\") and re-run setup.sh"
+  fi
+  log "reusing existing harness checkout at $HARNESS_DIR (pinned commit)"
 fi
 
 if ! ( cd "$HARNESS_DIR" && git apply --check "$PATCH_FILE" 2>/dev/null ); then
