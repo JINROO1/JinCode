@@ -59,6 +59,9 @@ if ! command -v git >/dev/null 2>&1; then
   die "git not found — Termux: pkg install git (if pkg keeps failing, see termux/README.md > Troubleshooting)"
 fi
 command -v node >/dev/null 2>&1 || die "node not found — Termux: pkg install nodejs. If pkg fails with a dpkg/libicu error, run 'pkg upgrade -y' then 'dpkg --configure -a' and re-run this script (see termux/README.md > Troubleshooting)"
+if ! node -v >/dev/null 2>&1; then
+  die "node is installed but cannot start ($(node -v 2>&1 | tail -n 1)). This is a libicu mismatch between nodejs and the system ICU library. Fix: 'pkg upgrade -y' then 'dpkg --configure -a'. If it still fails: 'termux-change-repo', choose the official mirror (packages.termux.dev), then 'pkg update -y && pkg upgrade -y' and re-run this script (see termux/README.md > Troubleshooting)."
+fi
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [[ "$NODE_MAJOR" -lt 22 ]]; then
   die "Node.js $(node -v) is too old — JinCode needs Node.js >= 22 (24.9+ recommended)"

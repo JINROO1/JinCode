@@ -172,6 +172,15 @@ comando. La capa de perfil resuelve esto de forma explícita:
   pkg upgrade -y          # alinea libicu y el resto con el Node nuevo
   dpkg --configure -a     # reintenta configurar los paquetes pendientes
   ```
+  Si `node -v` sigue sin arrancar (`CANNOT LINK EXECUTABLE "node": libicui18n.so.NN not found`),
+  el espejo de paquetes puede ir desfasado respecto al Node nuevo. Cambia al repositorio
+  oficial y actualiza todo:
+  ```bash
+  termux-change-repo      # elige el repositorio oficial (packages.termux.dev)
+  pkg update -y && pkg upgrade -y
+  dpkg --configure -a
+  node -v                 # debe imprimir v24.x o v26.x
+  ```
   Si sigue fallando y no usas ese paquete, retíralo: `pkg uninstall -y omniroute`, luego
   `dpkg --configure -a` y vuelve a ejecutar `bash termux/setup.sh`. `setup.sh` ya reintenta
   `dpkg --configure -a` automáticamente y continúa si `node` y `git` quedaron instalados.
