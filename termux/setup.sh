@@ -36,31 +36,35 @@ log() { printf '\033[1;34m[jincode]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[jincode] error:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── 1. toolchain ───────────────────────────────────────────────────────────
+# This step touches ONLY nodejs and git. It never runs 'pkg upgrade' and never
+# runs 'dpkg --configure -a' (that would reconfigure every pending package,
+# including unrelated programs such as omniroute or freebuff).
+node_ok() { command -v node >/dev/null 2>&1 && node -v >/dev/null 2>&1; }
+
 if [[ -n "${PREFIX:-}" && "$PREFIX" == *com.termux* ]]; then
   log "Termux detected ($PREFIX)"
-  if command -v pkg >/dev/null 2>&1; then
+  if command -v node >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+    log "node and git are already installed — no packages changed"
+  elif command -v pkg >/dev/null 2>&1; then
+    # Install only what is missing, one package at a time. Nothing else is upgraded.
     pkg update -y || log "warning: 'pkg update' reported errors — continuing with current package lists"
-    if ! pkg install -y nodejs git; then
-      # A broken unrelated package (e.g. a post-install script that fails) leaves
-      # dpkg half-configured and makes 'pkg install' exit non-zero even when
-      # nodejs/git were unpacked. Try to repair dpkg, then retry once.
-      log "warning: 'pkg install' reported errors — repairing the package database and retrying"
-      dpkg --configure -a || log "warning: dpkg still has unconfigured packages (see the list above)"
-      pkg install -y nodejs git || log "warning: 'pkg install' still failing — checking node/git directly"
+    if ! command -v node >/dev/null 2>&1; then
+      pkg install -y nodejs || die "could not install nodejs with pkg (other packages were not touched). See termux/README.md > Troubleshooting"
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+      pkg install -y git || die "could not install git with pkg (other packages were not touched). See termux/README.md > Troubleshooting"
     fi
   else
-    log "warning: 'pkg' not found — checking node/git directly"
+    die "pkg not found — install Node.js >= 22 and git manually"
   fi
 else
   log "non-Termux shell — assuming Node.js >= 22 and git are already installed"
 fi
 
-if ! command -v git >/dev/null 2>&1; then
-  die "git not found — Termux: pkg install git (if pkg keeps failing, see termux/README.md > Troubleshooting)"
-fi
-command -v node >/dev/null 2>&1 || die "node not found — Termux: pkg install nodejs. If pkg fails with a dpkg/libicu error, run 'pkg upgrade -y' then 'dpkg --configure -a' and re-run this script (see termux/README.md > Troubleshooting)"
-if ! node -v >/dev/null 2>&1; then
-  die "node is installed but cannot start ($(node -v 2>&1 | tail -n 1)). This is a libicu mismatch between nodejs and the system ICU library. Fix: 'pkg upgrade -y' then 'dpkg --configure -a'. If it still fails: 'termux-change-repo', choose the official mirror (packages.termux.dev), then 'pkg update -y && pkg upgrade -y' and re-run this script (see termux/README.md > Troubleshooting)."
+command -v git >/dev/null 2>&1 || die "git not found — Termux: pkg install git (see termux/README.md > Troubleshooting)"
+command -v node >/dev/null 2>&1 || die "node not found — Termux: pkg install nodejs (see termux/README.md > Troubleshooting)"
+if ! node_ok; then
+  die "node is installed but cannot start ($(node -v 2>&1 | tail -n 1)). Usually a libicu version mismatch: the nodejs binary needs a libicu.so version that is not on the system. This script does NOT upgrade libicu or other packages on its own, because other programs link against it. Options are in termux/README.md > Troubleshooting (section 'node no arranca')."
 fi
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [[ "$NODE_MAJOR" -lt 22 ]]; then

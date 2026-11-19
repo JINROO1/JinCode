@@ -164,26 +164,25 @@ comando. La capa de perfil resuelve esto de forma explícita:
   necesita `DEEPSEEK_API_KEY`. El resto de las herramientas (`bash`, `fs`, `edit`,
   subagentes,…) no dependen de ello. `web_fetch` funciona sin clave (solo destinos HTTP(S)
   públicos).
-- **`pkg install` falla con `libicui18n.so.NN not found` o `dpkg ... returned an error code (1)`:**
-  un paquete no relacionado de Termux (visto con `omniroute`) deja dpkg a medias: su script
-  post-instalación ejecuta `node`, que no encuentra la versión de ICU con la que se compiló
-  el Node nuevo. Solución:
+- **`node` no arranca (`CANNOT LINK EXECUTABLE "node": libicui18n.so.NN not found`):** el binario
+  de Node instalado necesita una versión de ICU (`libicu`) distinta a la del sistema. El script
+  **no** actualiza libicu ni otros paquetes por su cuenta, porque otros programas instalados
+  pueden depender de la versión actual. Diagnóstico sin cambiar nada:
   ```bash
-  pkg upgrade -y          # alinea libicu y el resto con el Node nuevo
-  dpkg --configure -a     # reintenta configurar los paquetes pendientes
+  ls $PREFIX/lib | grep -i libicui18n    # versiones de ICU presentes
+  apt policy libicu nodejs               # versiones instaladas y disponibles
+  dpkg --audit                           # paquetes a medio configurar
   ```
-  Si `node -v` sigue sin arrancar (`CANNOT LINK EXECUTABLE "node": libicui18n.so.NN not found`),
-  el espejo de paquetes puede ir desfasado respecto al Node nuevo. Cambia al repositorio
-  oficial y actualiza todo:
-  ```bash
-  termux-change-repo      # elige el repositorio oficial (packages.termux.dev)
-  pkg update -y && pkg upgrade -y
-  dpkg --configure -a
-  node -v                 # debe imprimir v24.x o v26.x
-  ```
-  Si sigue fallando y no usas ese paquete, retíralo: `pkg uninstall -y omniroute`, luego
-  `dpkg --configure -a` y vuelve a ejecutar `bash termux/setup.sh`. `setup.sh` ya reintenta
-  `dpkg --configure -a` automáticamente y continúa si `node` y `git` quedaron instalados.
+  Opciones, de menor a mayor alcance:
+  1. Actualizar solo ICU (puede afectar a programas enlazados contra la versión anterior):
+     `pkg install -y libicu`, luego `node -v`.
+  2. Actualizar todo el sistema (afecta a todos los paquetes instalados): `pkg upgrade -y`.
+  3. Retirar un paquete que bloquea dpkg, si no lo necesitas: `pkg uninstall -y omniroute`.
+
+  Un paquete como `omniroute` puede dejar dpkg a medias (su script post-instalación ejecuta
+  `node`, que falla por la misma causa). Mientras esté a medias, `pkg install` puede fallar.
+  Tras resolverlo, vuelve a ejecutar `bash termux/setup.sh`: si `node` y `git` ya funcionan,
+  el script no cambia ningún paquete.
 - **Actualizar el fork:** el patch sigue al commit fijado en `HARNESS_COMMIT`. Para adoptar
   un master nuevo de deepseek-harness, vuelve a clonar el harness, regenera el patch y
   re-ejecuta `setup.sh`.
