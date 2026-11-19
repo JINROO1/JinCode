@@ -1,8 +1,8 @@
 # JinCode
 
 Fork de **[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)** (MIT) con la
-misma arquitectura y funcionalidad —agente, herramientas, sandbox, sesiones, web UI— adaptado
-para **ejecutarse en Termux sobre Android** con una **interfaz web mobile-first** y un modelo
+misma arquitectura y funcionalidad —agente, herramientas, sandbox, sesiones, modelos— adaptado
+para **ejecutarse en Termux sobre Android** con un **cliente de terminal** y un modelo
 configurable de **cualquier endpoint OpenAI-compatible**.
 
 ## Qué contiene este repositorio
@@ -27,9 +27,11 @@ configurable de **cualquier endpoint OpenAI-compatible**.
 git clone https://github.com/JINROO1/JinCode.git ~/jincode
 cd ~/jincode
 bash termux/setup.sh        # Node/pnpm, clone + patch del harness, build, perfil jincode
-bash termux/start.sh        # http://127.0.0.1:3080
-# Luego, en la pantalla Modelos de la interfaz, introduce el endpoint y la API key
-# (igual que en DeepSeek Harness). No hace falta ninguna variable de entorno.
+bash termux/start.sh        # servidor API; imprime una URL con token
+# En otra sesión de Termux, abre el cliente de terminal con esa URL:
+bash termux/jincode.sh "<URL con token>"
+# Dentro del cliente: Ctrl+G guarda la API key del proveedor; Ctrl+O elige el modelo.
+# No hace falta ninguna variable de entorno.
 ```
 
 Ver `termux/README.md` para la configuración completa, la arquitectura de la adaptación y la

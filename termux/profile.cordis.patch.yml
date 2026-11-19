@@ -111,6 +111,14 @@
   disabled: true
 - id: client-hmr
   disabled: true
+- id: harness-dev-context
+  disabled: true
+- id: ui-session-status
+  disabled: true
+- id: ui-connector-account
+  disabled: true
+- id: product-analytics
+  disabled: true
 - id: modules
   disabled: true
 - id: cordis-client-runner

@@ -1,8 +1,9 @@
 # JinCode en Termux (Android)
 
 JinCode es un **fork de DeepSeek Harness** (`deepseek-ai/deepseek-harness`, MIT) con la misma
-arquitectura y funcionalidad (agente, herramientas, sandbox, sesiones, web UI), adaptado para
-ejecutarse **en Termux sobre Android** con una **interfaz web mobile-first**.
+arquitectura y funcionalidad (agente, herramientas, sandbox, sesiones, modelos, credenciales),
+adaptado para ejecutarse **en Termux sobre Android**. La interfaz es un **cliente de terminal**
+(`jincode-cli/`) que consume la API remota del harness; la página web del harness queda retirada.
 
 - **Motor:** el código del harness se reutiliza tal cual; el fork aporta una capa de adaptación
   (patch de perfil) y una interfaz de usuario móvil nueva.
@@ -18,9 +19,11 @@ ejecutarse **en Termux sobre Android** con una **interfaz web mobile-first**.
 termux/
 ├── setup.sh                     # instalación completa (toolchain, fuente, build, perfil)
 ├── check.sh                     # preflight: verifica el estado antes de arrancar (--deep compone el perfil)
-├── start.sh                     # arranca el servidor web
+├── start.sh                     # arranca el servidor (API remota, sin página web)
+├── jincode.sh                   # arranca el cliente de terminal contra el servidor en marcha
 ├── profile.cordis.patch.yml     # capa de adaptación del perfil `jincode` (sandbox + modelo)
 ├── profile.package.json         # manifiesto del perfil (bundles: dsh-base + dsh-web-app)
+../jincode-cli/                  # cliente de terminal (Ink + TypeScript): src/, tests/
 ├── patches/jincode-harness.patch  # diff del fork aplicado al fuente de deepseek-harness
 └── HARNESS_COMMIT               # commit de deepseek-harness sobre el que aplica el patch
 ```
@@ -60,12 +63,16 @@ bash termux/setup.sh
 
 ## Configuración del modelo
 
-La clave y el endpoint se introducen en la **pantalla Modelos** de la interfaz web, igual
-que en DeepSeek Harness. No hace falta ninguna variable de entorno:
+La clave se introduce en el cliente de terminal, con la misma función que la pantalla Modelos
+de la web (`credentials/set`). No hace falta ninguna variable de entorno:
 
-1. Arranca el servidor (`bash termux/start.sh`) y abre la URL con `?token=...`.
-2. En **Modelos**, elige la ruta `JinCode` (proveedor OpenAI-compatible).
-3. Escribe la **URL base** (con `/v1`), el **identificador del modelo** y la **API key**, y guarda.
+1. Arranca el servidor (`bash termux/start.sh`) y copia la URL con `?token=...` que imprime.
+2. En otra sesión de Termux, abre el cliente: `bash termux/jincode.sh "<URL>"`.
+3. Pulsa **Ctrl+G** (claves de los proveedores), elige la ruta `JinCode OpenAI-Compatible`,
+   escribe la **API key** y pulsa Enter. La clave no se vuelve a mostrar (solo se indica su longitud).
+4. Pulsa **Ctrl+O** para elegir el modelo de la sesión.
+
+El **endpoint** (URL base con `/v1`) se configura en `JINCODE_BASE_URL` al arrancar el servidor.
 
 La clave se guarda en `$DSH_HOME/.credentials.yaml` (por defecto `~/.dsh/.credentials.yaml`)
 con permisos `600`, bajo la referencia `JINCODE_API_KEY`. El perfil ya declara esa referencia
@@ -116,10 +123,10 @@ bash termux/start.sh
 - escucha en `127.0.0.1:3080` (cambiable con `PORT`). El harness no admite `0.0.0.0`
   (expondría ejecución remota de código a toda la red). Para usarlo desde otro dispositivo de
   la misma red, pasa la IP concreta del teléfono: `HOST=192.168.x.x bash termux/start.sh`.
-- **Primera visita:** el servidor imprime una URL con `?token=...`. Abre
-  `http://127.0.0.1:3080` en el navegador del teléfono y, si se muestra el token, añádelo a
-  la URL una vez para autorizar la sesión (después, la cookie deja pasar las peticiones).
-- Desde otro dispositivo de la misma red: `http://<ip-del-telefono>:3080`.
+- **Cliente:** en otra sesión de Termux, `bash termux/jincode.sh "<URL con token>"`. La primera
+  vez instala las dependencias del cliente (`npm ci`). El token viaja solo en la línea de
+  comandos o en `JINCODE_URL`; el cliente no lo guarda en disco.
+- El servidor no sirve ninguna página web: la URL impresa es solo el punto de entrada de la API.
 - **Telemetría:** `start.sh` sets `DSH_TELEMETRY_DISABLED=1`; la telemetría OTel del harness
   queda apagada.
 

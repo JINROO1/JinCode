@@ -45,10 +45,11 @@ PORT="${PORT:-3080}"
 # The key is entered in the browser (Models page), not required in the environment.
 STORE_FILE="${DSH_HOME:-$HOME/.dsh}/.credentials.yaml"
 if [[ -z "${JINCODE_API_KEY:-}" ]] && ! { [[ -f "$STORE_FILE" ]] && grep -q '^[[:space:]]*JINCODE_API_KEY:' "$STORE_FILE"; }; then
-  echo "start.sh: no API key saved yet. The server starts anyway: open the Models page (JinCode) and enter it." >&2
+  echo "start.sh: no API key saved yet. The server starts anyway: in the terminal client press Ctrl+G and enter it." >&2
 fi
 
 echo "JinCode starting: http://$HOST:$PORT  (profile jincode, model ${JINCODE_MODEL:-gpt-4o-mini})"
+echo "Terminal client: bash termux/jincode.sh \"<URL con token impresa por el servidor>\""
 # Launch the CLI with Node directly (the same command `pnpm dsh` runs). The profile
 # resolver reaches Node's internal modules through --expose-internals, because the
 # node-addon-require-builtin native addon has no android-arm64 build. This avoids
