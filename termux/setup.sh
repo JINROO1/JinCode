@@ -45,7 +45,9 @@ die() { printf '\033[1;31m[jincode] error:\033[0m %s\n' "$*" >&2; exit 1; }
 # including unrelated programs such as omniroute or freebuff).
 node_ok() { command -v node >/dev/null 2>&1 && node -v >/dev/null 2>&1; }
 
+IS_TERMUX=0
 if [[ -n "${PREFIX:-}" && "$PREFIX" == *com.termux* ]]; then
+  IS_TERMUX=1
   log "Termux detected ($PREFIX)"
   if command -v node >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
     log "node and git are already installed — no packages changed"
@@ -142,15 +144,27 @@ log "installing dependencies (engine-strict off for older Node)"
 # Mobile networks drop connections; pnpm's own retries are short, so retry the install a few times.
 # Re-running is safe: packages already in the pnpm store are reused.
 install_deps() {
-  local attempt
+  local attempt extra=()
+  # koffi (Windows FFI) has no android-arm64 prebuild and fails to compile on Termux.
+  # It is only loaded on Windows, so on Termux skip all install scripts and rebuild
+  # just what the runtime needs (see below).
+  if [[ "$IS_TERMUX" == 1 ]]; then extra+=(--ignore-scripts); fi
   for attempt in 1 2 3; do
-    if ( cd "$HARNESS_DIR" && pnpm install --config.engine-strict=false ); then
-      return 0
+    if ( cd "$HARNESS_DIR" && pnpm install --config.engine-strict=false ${extra[@]+"${extra[@]}"} ); then
+      break
     fi
     log "pnpm install failed (attempt $attempt of 3) — network drop or registry error; retrying in 20s"
     sleep 20
+    if [[ "$attempt" == 3 ]]; then
+      die "pnpm install failed after 3 attempts. Check the connection and re-run termux/setup.sh (completed packages are cached)"
+    fi
   done
-  die "pnpm install failed after 3 attempts. Check the connection and re-run termux/setup.sh (completed packages are cached)"
+  if [[ "$IS_TERMUX" == 1 ]]; then
+    log "Termux: install scripts skipped (koffi is Windows-only). Rebuilding esbuild (required) and node-pty (terminal, optional)"
+    ( cd "$HARNESS_DIR" && pnpm rebuild esbuild ) || die "esbuild install step failed"
+    ( cd "$HARNESS_DIR" && pnpm rebuild node-pty ) \
+      || log "warning: node-pty did not build on this device — the persistent terminal may be unavailable; everything else works"
+  fi
 }
 install_deps
 
