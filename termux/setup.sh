@@ -139,7 +139,20 @@ PNPM_WANT="$(cd "$HARNESS_DIR" && node -p "require('./package.json').packageMana
 [[ -n "$PNPM_WANT" ]] || die "could not read the pnpm version from $HARNESS_DIR/package.json"
 ensure_pnpm "$PNPM_WANT"
 log "installing dependencies (engine-strict off for older Node)"
-( cd "$HARNESS_DIR" && pnpm install --config.engine-strict=false )
+# Mobile networks drop connections; pnpm's own retries are short, so retry the install a few times.
+# Re-running is safe: packages already in the pnpm store are reused.
+install_deps() {
+  local attempt
+  for attempt in 1 2 3; do
+    if ( cd "$HARNESS_DIR" && pnpm install --config.engine-strict=false ); then
+      return 0
+    fi
+    log "pnpm install failed (attempt $attempt of 3) — network drop or registry error; retrying in 20s"
+    sleep 20
+  done
+  die "pnpm install failed after 3 attempts. Check the connection and re-run termux/setup.sh (completed packages are cached)"
+}
+install_deps
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   log "building host + web client (this takes several minutes; see README for swap tips)"
