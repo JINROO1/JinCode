@@ -46,5 +46,17 @@ if [[ -z "${JINCODE_API_KEY:-}" ]] && ! { [[ -f "$STORE_FILE" ]] && grep -q '^[[
 fi
 
 echo "JinCode starting: http://$HOST:$PORT  (profile jincode, model ${JINCODE_MODEL:-gpt-4o-mini})"
+# Use the pnpm that setup.sh installed (pinned to the harness packageManager
+# version), not whichever pnpm happens to be first on PATH in this shell.
+NPM_GBIN="$(npm prefix -g 2>/dev/null || true)/bin"
+[[ -x "$NPM_GBIN/pnpm" ]] && export PATH="$NPM_GBIN:$PATH"
+hash -r
+WANT_PNPM="$(node -p "require('$HARNESS_DIR/package.json').packageManager" | sed 's/^pnpm@//')"
+HAVE_PNPM="$(pnpm --version 2>/dev/null || true)"
+if [[ "$HAVE_PNPM" != "$WANT_PNPM" ]]; then
+  echo "start.sh: pnpm resolves to '$(command -v pnpm 2>/dev/null || echo none)' (version '$HAVE_PNPM'), expected $WANT_PNPM. Run termux/setup.sh again." >&2
+  exit 1
+fi
+
 cd "$HARNESS_DIR"
 exec pnpm dsh --profile jincode --no-open --host "$HOST" --port "$PORT"
