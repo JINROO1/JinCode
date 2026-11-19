@@ -61,6 +61,50 @@ index a34746d8..d816e662 100644
        await openFile(`unavailable.${extension}`)
        await preview.getByText(invalidExcel, { exact: true }).waitFor()
      }
+diff --git a/packages/boot/app-boot/src/profile-resolution/resolver.ts b/packages/boot/app-boot/src/profile-resolution/resolver.ts
+index 468ec82e..9a04784b 100644
+--- a/packages/boot/app-boot/src/profile-resolution/resolver.ts
++++ b/packages/boot/app-boot/src/profile-resolution/resolver.ts
+@@ -730,20 +730,33 @@ class ResolutionRouter {
+   }
+ }
+ 
+-function internalModules(): InternalModules {
++/**
++ * Node's internal modules, reached the way the vendored Loader reaches them:
++ * under `--expose-internals` they are plain requires; otherwise through the
++ * `node-addon-require-builtin` native addon. That addon ships no build for
++ * android-arm64, so Termux runs with `--expose-internals` (see termux/start.sh).
++ * @param id - the internal module id, for example `internal/modules/cjs/loader`.
++ * @returns the internal module's exports.
++ */
++function requireNodeInternal(id: string): any {
+   const require = createRequire(import.meta.url)
++  if (process.execArgv.includes('--expose-internals')) return require(id)
+   const addon = require('node-addon-require-builtin') as { requireBuiltin(moduleId: string): unknown }
+-  const esmModule = addon.requireBuiltin('internal/modules/esm/loader') as {
++  return addon.requireBuiltin(id)
++}
++
++function internalModules(): InternalModules {
++  const esmModule = requireNodeInternal('internal/modules/esm/loader') as {
+     getOrInitializeCascadedLoader(): ModuleLoaderV1 | ModuleLoaderV2
+   }
+-  const cjsModule = addon.requireBuiltin('internal/modules/cjs/loader') as { Module: CommonJsModule }
+-  const cjsHelpers = addon.requireBuiltin('internal/modules/helpers') as {
++  const cjsModule = requireNodeInternal('internal/modules/cjs/loader') as { Module: CommonJsModule }
++  const cjsHelpers = requireNodeInternal('internal/modules/helpers') as {
+     getCjsConditions(): ReadonlySet<string>
+   }
+-  const esmUtils = addon.requireBuiltin('internal/modules/esm/utils') as {
++  const esmUtils = requireNodeInternal('internal/modules/esm/utils') as {
+     getDefaultConditions(): readonly string[]
+   }
+-  const esmResolve = addon.requireBuiltin('internal/modules/esm/resolve') as {
++  const esmResolve = requireNodeInternal('internal/modules/esm/resolve') as {
+     defaultResolve(
+       specifier: string,
+       context: { parentURL?: string; conditions?: readonly string[] },
 diff --git a/packages/client/ui-layout/src/client/AppFrame.tsx b/packages/client/ui-layout/src/client/AppFrame.tsx
 index 23e71c9c..b7d62020 100644
 --- a/packages/client/ui-layout/src/client/AppFrame.tsx

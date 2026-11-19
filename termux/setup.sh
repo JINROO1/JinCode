@@ -189,9 +189,9 @@ JinCode is ready. Next steps:
 
   1. Start the server:
        bash $SCRIPT_DIR/start.sh
-  2. Open http://127.0.0.1:3080 on the phone (or http://<phone-ip>:3080 from
-     another device on the same network). The first visit prints a ?token=...
-     URL — open it once to authorize the browser.
+  2. Open http://127.0.0.1:3080 on the phone. The first visit prints a ?token=...
+     URL — open it once to authorize the browser. For another device on the
+     same network, start with the phone's LAN address: HOST=<phone-ip> start.sh
   3. Models page: choose the JinCode route, enter your OpenAI-compatible
      endpoint and API key there, as in DeepSeek Harness. The key is stored in
      $DSH_HOME/.credentials.yaml; no environment variable is needed.

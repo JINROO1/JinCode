@@ -2,8 +2,11 @@
 # JinCode — Termux / Android launcher.
 #
 # Starts the JinCode web agent on the `jincode` profile:
-#   - binds 0.0.0.0 so the phone browser (and LAN devices) can reach it
+#   - binds 127.0.0.1 by default: the phone browser reaches it. The harness refuses
+#     the wildcard 0.0.0.0 (it would expose code execution to the network); for LAN
+#     access pass a concrete address of this phone, e.g. HOST=192.168.1.20
 #   - telemetry off (DSH_TELEMETRY_DISABLED — config alone cannot disable the row)
+#   - runs Node with --expose-internals (no native addon on Android; see README)
 #   - loads model/endpoint settings from ~/.jincode/env when present
 #
 # Environment (in ~/.jincode/env or the shell):
@@ -14,7 +17,7 @@
 #   JINCODE_CONTEXT_WINDOW / JINCODE_MAX_TOKENS   route capacity fallbacks
 #   JINCODE_BASH_TIMEOUT_MS   per-command bash timeout (default 120000)
 #   DSH_PERMISSION_MODE  sandbox policy (default danger-full-access on Termux)
-#   PORT / HOST          bind address (default 0.0.0.0:3080)
+#   PORT / HOST          bind address (default 127.0.0.1:3080; a concrete LAN IP for other devices)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,7 +39,7 @@ fi
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
 export DSH_TELEMETRY_DISABLED="${DSH_TELEMETRY_DISABLED:-1}"
 
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-3080}"
 
 # The key is entered in the browser (Models page), not required in the environment.
@@ -46,17 +49,9 @@ if [[ -z "${JINCODE_API_KEY:-}" ]] && ! { [[ -f "$STORE_FILE" ]] && grep -q '^[[
 fi
 
 echo "JinCode starting: http://$HOST:$PORT  (profile jincode, model ${JINCODE_MODEL:-gpt-4o-mini})"
-# Use the pnpm that setup.sh installed (pinned to the harness packageManager
-# version), not whichever pnpm happens to be first on PATH in this shell.
-NPM_GBIN="$(npm prefix -g 2>/dev/null || true)/bin"
-[[ -x "$NPM_GBIN/pnpm" ]] && export PATH="$NPM_GBIN:$PATH"
-hash -r
-WANT_PNPM="$(node -p "require('$HARNESS_DIR/package.json').packageManager" | sed 's/^pnpm@//')"
-HAVE_PNPM="$(pnpm --version 2>/dev/null || true)"
-if [[ "$HAVE_PNPM" != "$WANT_PNPM" ]]; then
-  echo "start.sh: pnpm resolves to '$(command -v pnpm 2>/dev/null || echo none)' (version '$HAVE_PNPM'), expected $WANT_PNPM. Run termux/setup.sh again." >&2
-  exit 1
-fi
-
+# Launch the CLI with Node directly (the same command `pnpm dsh` runs). The profile
+# resolver reaches Node's internal modules through --expose-internals, because the
+# node-addon-require-builtin native addon has no android-arm64 build. This avoids
+# pnpm on the launch path, so a different pnpm on PATH cannot interfere.
 cd "$HARNESS_DIR"
-exec pnpm dsh --profile jincode --no-open --host "$HOST" --port "$PORT"
+exec node --expose-internals --import tsx/esm apps/cli/src/bin.ts --profile jincode --no-open --host "$HOST" --port "$PORT"

@@ -113,7 +113,9 @@ Luego:
 bash termux/start.sh
 ```
 
-- atanca en `0.0.0.0:3080` (cambiable con `HOST`/`PORT`).
+- escucha en `127.0.0.1:3080` (cambiable con `PORT`). El harness no admite `0.0.0.0`
+  (expondría ejecución remota de código a toda la red). Para usarlo desde otro dispositivo de
+  la misma red, pasa la IP concreta del teléfono: `HOST=192.168.x.x bash termux/start.sh`.
 - **Primera visita:** el servidor imprime una URL con `?token=...`. Abre
   `http://127.0.0.1:3080` en el navegador del teléfono y, si se muestra el token, añádelo a
   la URL una vez para autorizar la sesión (después, la cookie deja pasar las peticiones).
