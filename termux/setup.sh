@@ -187,17 +187,14 @@ cat <<EOF
 
 JinCode is ready. Next steps:
 
-  1. Configure the model endpoint (any OpenAI-compatible API):
-       cat > ~/.jincode/env <<'ENV'
-       JINCODE_API_KEY=sk-...
-       JINCODE_BASE_URL=https://your-endpoint/v1
-       JINCODE_MODEL=your-model-id
-       ENV
-  2. Start the server:
+  1. Start the server:
        bash $SCRIPT_DIR/start.sh
-  3. Open http://127.0.0.1:3080 on the phone (or http://<phone-ip>:3080 from
+  2. Open http://127.0.0.1:3080 on the phone (or http://<phone-ip>:3080 from
      another device on the same network). The first visit prints a ?token=...
      URL — open it once to authorize the browser.
+  3. Models page: choose the JinCode route, enter your OpenAI-compatible
+     endpoint and API key there, as in DeepSeek Harness. The key is stored in
+     $DSH_HOME/.credentials.yaml; no environment variable is needed.
 
 The mobile-first UI adapts automatically below 820px width; desktop layouts
 are unchanged above that breakpoint.

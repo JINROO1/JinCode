@@ -59,10 +59,11 @@
 
 # Hand-declared pi-ai route. `api: openai-completions` + an explicit `baseURL`
 # are required because the route key is not in pi-ai's installed catalog.
-# The key is resolved per request through the credential seam from
-# JINCODE_API_KEY (exported environment, project/user `.env`, or
-# `$DSH_HOME/.credentials.yaml`); a miss fails the request with
-# MISSING_CREDENTIAL rather than silently using an ambient key.
+# The API key is entered on the Models page, exactly as in DeepSeek Harness.
+# The page stores it in `$DSH_HOME/.credentials.yaml` under the reference
+# JINCODE_API_KEY, which is the reference named here. The managed store is read
+# first; the process environment is only a fallback. Until a key is saved, a
+# request fails with MISSING_CREDENTIAL rather than silently using an ambient key.
 - id: llm-pi-ai
   config:
     providers:

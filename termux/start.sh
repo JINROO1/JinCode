@@ -7,7 +7,8 @@
 #   - loads model/endpoint settings from ~/.jincode/env when present
 #
 # Environment (in ~/.jincode/env or the shell):
-#   JINCODE_API_KEY      API key for the OpenAI-compatible endpoint (required)
+#   JINCODE_API_KEY      optional fallback key. The normal path is the Models page
+#                        in the browser, which saves the key in $DSH_HOME/.credentials.yaml
 #   JINCODE_BASE_URL     endpoint base, e.g. https://api.openai.com/v1
 #   JINCODE_MODEL        model id served by that endpoint
 #   JINCODE_CONTEXT_WINDOW / JINCODE_MAX_TOKENS   route capacity fallbacks
@@ -38,9 +39,10 @@ export DSH_TELEMETRY_DISABLED="${DSH_TELEMETRY_DISABLED:-1}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-3080}"
 
-if [[ -z "${JINCODE_API_KEY:-}" ]]; then
-  echo "start.sh: JINCODE_API_KEY is not set — write it to $ENV_FILE (see termux/README.md)" >&2
-  exit 1
+# The key is entered in the browser (Models page), not required in the environment.
+STORE_FILE="${DSH_HOME:-$HOME/.dsh}/.credentials.yaml"
+if [[ -z "${JINCODE_API_KEY:-}" ]] && ! { [[ -f "$STORE_FILE" ]] && grep -q '^[[:space:]]*JINCODE_API_KEY:' "$STORE_FILE"; }; then
+  echo "start.sh: no API key saved yet. The server starts anyway: open the Models page (JinCode) and enter it." >&2
 fi
 
 echo "JinCode starting: http://$HOST:$PORT  (profile jincode, model ${JINCODE_MODEL:-gpt-4o-mini})"

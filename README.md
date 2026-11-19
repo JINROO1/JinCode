@@ -27,12 +27,9 @@ configurable de **cualquier endpoint OpenAI-compatible**.
 git clone https://github.com/JINROO1/JinCode.git ~/jincode
 cd ~/jincode
 bash termux/setup.sh        # Node/pnpm, clone + patch del harness, build, perfil jincode
-cat > ~/.jincode/env <<'ENV'
-JINCODE_API_KEY=sk-...
-JINCODE_BASE_URL=https://api.openai.com/v1
-JINCODE_MODEL=gpt-4o-mini
-ENV
 bash termux/start.sh        # http://127.0.0.1:3080
+# Luego, en la pantalla Modelos de la interfaz, introduce el endpoint y la API key
+# (igual que en DeepSeek Harness). No hace falta ninguna variable de entorno.
 ```
 
 Ver `termux/README.md` para la configuración completa, la arquitectura de la adaptación y la

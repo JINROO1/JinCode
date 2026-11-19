@@ -7,7 +7,7 @@
 #   2. harness checkout: exists and carries the JinCode fork patch
 #   3. build artifacts: web dist and host libs are present
 #   4. profile: the `jincode` profile is installed in $DSH_HOME
-#   5. model configuration: JINCODE_API_KEY resolves (env or ~/.jincode/env)
+#   5. model configuration: an API key is saved in $DSH_HOME/.credentials.yaml
 #   6. --deep: composes the profile through the harness (`dsh --dump-config`)
 #      and confirms the Termux rows are present with no patch warnings
 #
@@ -17,7 +17,7 @@
 # Environment:
 #   JINCODE_HARNESS_DIR  harness checkout (default: <repo>/harness)
 #   DSH_HOME             harness home (default: ~/.dsh)
-#   JINCODE_ENV_FILE     env file to source for the key check (default: ~/.jincode/env)
+#   JINCODE_ENV_FILE     optional env file for endpoint/model settings (default: ~/.jincode/env)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -118,13 +118,20 @@ if [[ -z "${JINCODE_API_KEY:-}" && -f "$ENV_FILE" ]]; then
   . "$ENV_FILE"
   set +a
 fi
-if [[ -n "${JINCODE_API_KEY:-}" ]]; then
-  pass "JINCODE_API_KEY is set (endpoint: ${JINCODE_BASE_URL:-default})"
+STORE_FILE="$DSH_HOME/.credentials.yaml"
+if [[ -f "$STORE_FILE" ]] && grep -q '^[[:space:]]*JINCODE_API_KEY:' "$STORE_FILE"; then
+  pass "API key saved on the Models page ($STORE_FILE)"
+  mode="$(stat -c %a "$STORE_FILE" 2>/dev/null || echo unknown)"
+  if [[ "$mode" != 600 ]]; then
+    fail "$STORE_FILE has mode $mode — the harness refuses to read it; run: chmod 600 $STORE_FILE"
+  fi
+elif [[ -n "${JINCODE_API_KEY:-}" ]]; then
+  pass "JINCODE_API_KEY set in the environment (a key saved on the Models page takes precedence)"
 else
-  fail "JINCODE_API_KEY is not set — write it to $ENV_FILE (see termux/README.md)"
+  warn "no API key yet — after starting, open the Models page (JinCode) and enter it"
 fi
 if [[ -z "${JINCODE_MODEL:-}" ]]; then
-  warn "JINCODE_MODEL unset — the route defaults to gpt-4o-mini; set it if your endpoint serves another id"
+  warn "JINCODE_MODEL unset — the route default gpt-4o-mini applies until you pick a model in the Models page"
 fi
 
 # ── 6. deep: compose the profile ───────────────────────────────────────────

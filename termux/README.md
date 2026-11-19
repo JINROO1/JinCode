@@ -60,25 +60,32 @@ bash termux/setup.sh
 
 ## Configuración del modelo
 
-Crea el archivo de entorno con los datos de tu endpoint OpenAI-compatible:
+La clave y el endpoint se introducen en la **pantalla Modelos** de la interfaz web, igual
+que en DeepSeek Harness. No hace falta ninguna variable de entorno:
 
-```bash
-mkdir -p ~/.jincode
-cat > ~/.jincode/env <<'ENV'
-JINCODE_API_KEY=sk-...
-JINCODE_BASE_URL=https://api.openai.com/v1
-JINCODE_MODEL=gpt-4o-mini
-ENV
-```
+1. Arranca el servidor (`bash termux/start.sh`) y abre la URL con `?token=...`.
+2. En **Modelos**, elige la ruta `JinCode` (proveedor OpenAI-compatible).
+3. Escribe la **URL base** (con `/v1`), el **identificador del modelo** y la **API key**, y guarda.
+
+La clave se guarda en `$DSH_HOME/.credentials.yaml` (por defecto `~/.dsh/.credentials.yaml`)
+con permisos `600`, bajo la referencia `JINCODE_API_KEY`. El perfil ya declara esa referencia
+(`apiKeyEnv`), así que la pantalla la reutiliza. El archivo lo gestiona la aplicación: no
+hace falta editarlo a mano. Si lo editas, deja los permisos en `600`, o el harness se niega a
+leerlo.
+
+Las variables de entorno son **opcionales** y sirven como valores por defecto o respaldo:
 
 | Variable | Default | Significado |
 |---|---|---|
-| `JINCODE_API_KEY` | — (obligatoria) | Clave de API; se resuelve por petición vía la costura de credenciales (ambiente, `.env`, o `~/.dsh/.credentials.yaml`) |
-| `JINCODE_BASE_URL` | `https://api.openai.com/v1` | Base del endpoint (`/v1` incluida) |
-| `JINCODE_MODEL` | `gpt-4o-mini` | Identificador del modelo servido por el endpoint |
+| `JINCODE_API_KEY` | — (opcional) | Respaldo si no hay clave guardada en Modelos. Una clave guardada en Modelos tiene prioridad |
+| `JINCODE_BASE_URL` | `https://api.openai.com/v1` | Base del endpoint por defecto (`/v1` incluida) |
+| `JINCODE_MODEL` | `gpt-4o-mini` | Identificador del modelo por defecto |
 | `JINCODE_CONTEXT_WINDOW` | `128000` | Ventana de contexto por defecto de la ruta |
 | `JINCODE_MAX_TOKENS` | `32768` | Cap de salida por defecto de la ruta |
 | `JINCODE_BASH_TIMEOUT_MS` | `120000` | Timeout por comando del executor bash |
+
+Si prefieres valores por defecto en un archivo, `~/.jincode/env` se carga al arrancar
+(`termux/start.sh`), pero ya no es necesario para la clave.
 
 La ruta se declara en la capa de perfil (`profile.cordis.patch.yml`) como proveedor
 manual `jincode` con `api: openai-completions`, y `agent-default-model` apunta a ella. Para
@@ -158,8 +165,10 @@ comando. La capa de perfil resuelve esto de forma explícita:
   actualiza Node (24.9+).
 - **Build lento / agotamiento de memoria:** añade swap (ver arriba) y revisa que el build
   no se haya interrumpido; `setup.sh --skip-build` reutiliza el `dist` anterior.
-- **`MISSING_CREDENTIAL`:** `JINCODE_API_KEY` no está definido o está vacío; revisa
-  `~/.jincode/env`.
+- **`MISSING_CREDENTIAL`:** todavía no hay clave guardada. Abre **Modelos** en la interfaz y
+  introdúcela ahí. `termux/check.sh` muestra si la encuentra.
+- **`credentials-local: ... readable beyond its owner (mode 644)`:** el archivo de credenciales
+  tiene permisos demasiado abiertos. Ejecuta `chmod 600 ~/.dsh/.credentials.yaml`.
 - **`web_search` no funciona:** el proveedor de búsqueda del bundle base es el de DeepSeek y
   necesita `DEEPSEEK_API_KEY`. El resto de las herramientas (`bash`, `fs`, `edit`,
   subagentes,…) no dependen de ello. `web_fetch` funciona sin clave (solo destinos HTTP(S)
