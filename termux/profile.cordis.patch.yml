@@ -1,0 +1,85 @@
+# JinCode — Termux / Android profile patch layer.
+#
+# Applied as the profile's own `cordis.patch.yml`, i.e. the LAST layer over the
+# composed tree (dsh-base insert → dsh-web-app insert → presets → this file).
+# A patch replaces the targeted row's whole `config` and may only restate a
+# row's `name` when it matches, so:
+#   - rows we reconfigure keep their id AND their name (config-only overrides);
+#   - the confining bash executor (`bash-sandbox`, which always injects and
+#     calls `ctx.sandbox`) CANNOT be renamed in place — it is disabled here and
+#     replaced by an inserted `bash-local` row with a fresh id.
+#
+# Why this composition on Termux:
+#   - Docker, bwrap and the Landlock native launcher are unavailable on Android,
+#     so `dsh-sandbox-local` would fail closed (SANDBOX_UNAVAILABLE) the moment
+#     any command tried to confine. The whole deployment therefore runs at
+#     `danger-full-access`: every consumer that would call `ctx.sandbox.confine`
+#     (bash-sandbox, terminal-bash, ptc-runtime worker, fs-sandbox) short-circuits
+#     or never confines under this mode, so the seam is never exercised.
+#   - `@deepseek-ai/dsh-bash-local` runs each command as a fresh unconfined
+#     `bash -c` with the harness process's own authority — the only executor
+#     that works without a confinement runner.
+#   - The model route is a hand-declared OpenAI-compatible gateway through the
+#     dormant `llm-pi-ai` adapter: entry config supplies the `jincode` route
+#     (the Web Models page would write the same shape into a settings section,
+#     which would layer over this base). `agent-default-model` is retargeted to
+#     that route.
+
+# ── sandbox policy: full access, no confinement runner ─────────────────────
+
+- id: sandbox-policy
+  config:
+    # DSH_PERMISSION_MODE stays an explicit deployment override; the Termux
+    # default is danger-full-access because no runner exists here.
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'danger-full-access'
+    workspaceRoot: !!js process.cwd()
+
+- id: approval
+  config:
+    # Mirrors the base expression, with the Termux default folded in: under
+    # danger-full-access nothing is asked; any other mode asks.
+    policy: !!js "(process.env.DSH_PERMISSION_MODE ?? 'danger-full-access') === 'danger-full-access' ? 'never' : 'ask'"
+
+# The confining executor always wraps through ctx.sandbox — unusable on
+# Android. Disable it; the inserted bash-local row below owns ctx.shell.
+- id: bash-sandbox
+  disabled: true
+
+- insert:
+    # Unconfined POSIX bash executor: fresh `bash -c` per call, no rc files,
+    # model-friendly terminal environment, bounded output with spill recovery.
+    - id: bash-local
+      name: '@deepseek-ai/dsh-bash-local'
+      config:
+        cwd: !!js process.cwd()
+        timeoutMs: !!js Number(process.env.JINCODE_BASH_TIMEOUT_MS || 120000)
+        maxTimeoutMs: 600000
+
+# ── model route: any OpenAI-compatible endpoint ─────────────────────────────
+
+# Hand-declared pi-ai route. `api: openai-completions` + an explicit `baseURL`
+# are required because the route key is not in pi-ai's installed catalog.
+# The key is resolved per request through the credential seam from
+# JINCODE_API_KEY (exported environment, project/user `.env`, or
+# `$DSH_HOME/.credentials.yaml`); a miss fails the request with
+# MISSING_CREDENTIAL rather than silently using an ambient key.
+- id: llm-pi-ai
+  config:
+    providers:
+      jincode:
+        displayName: JinCode OpenAI-Compatible
+        apiKeyEnv: JINCODE_API_KEY
+        api: openai-completions
+        baseURL: !!js process.env.JINCODE_BASE_URL ?? 'https://api.openai.com/v1'
+        # Capacity fallbacks for models this route lists that neither the
+        # entry nor the installed catalog sizes.
+        defaultContextWindow: !!js Number(process.env.JINCODE_CONTEXT_WINDOW || 128000)
+        defaultMaxTokens: !!js Number(process.env.JINCODE_MAX_TOKENS || 32768)
+        models:
+          - id: !!js process.env.JINCODE_MODEL ?? 'gpt-4o-mini'
+
+# Every Agent created without an explicit selection uses the jincode route.
+- id: agent-default-model
+  config:
+    provider: jincode
+    model: !!js process.env.JINCODE_MODEL ?? 'gpt-4o-mini'

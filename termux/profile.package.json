@@ -1,0 +1,13 @@
+{
+  "name": "jincode-termux",
+  "private": true,
+  "description": "JinCode profile for Termux / Android: the dsh web stack with the Termux sandbox and model-route adaptation.",
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}

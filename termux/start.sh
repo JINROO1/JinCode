@@ -1,0 +1,48 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# JinCode — Termux / Android launcher.
+#
+# Starts the JinCode web agent on the `jincode` profile:
+#   - binds 0.0.0.0 so the phone browser (and LAN devices) can reach it
+#   - telemetry off (DSH_TELEMETRY_DISABLED — config alone cannot disable the row)
+#   - loads model/endpoint settings from ~/.jincode/env when present
+#
+# Environment (in ~/.jincode/env or the shell):
+#   JINCODE_API_KEY      API key for the OpenAI-compatible endpoint (required)
+#   JINCODE_BASE_URL     endpoint base, e.g. https://api.openai.com/v1
+#   JINCODE_MODEL        model id served by that endpoint
+#   JINCODE_CONTEXT_WINDOW / JINCODE_MAX_TOKENS   route capacity fallbacks
+#   JINCODE_BASH_TIMEOUT_MS   per-command bash timeout (default 120000)
+#   DSH_PERMISSION_MODE  sandbox policy (default danger-full-access on Termux)
+#   PORT / HOST          bind address (default 0.0.0.0:3080)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HARNESS_DIR="${JINCODE_HARNESS_DIR:-$REPO_ROOT/harness}"
+
+[[ -d "$HARNESS_DIR/.git" ]] || { echo "start.sh: harness checkout missing at $HARNESS_DIR — run termux/setup.sh first" >&2; exit 1; }
+[[ -f "$HARNESS_DIR/apps/cli/package.json" ]] || { echo "start.sh: $HARNESS_DIR does not look like the harness source" >&2; exit 1; }
+
+# Model/endpoint configuration, shell env wins over the file.
+ENV_FILE="${JINCODE_ENV_FILE:-$HOME/.jincode/env}"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
+
+export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
+export DSH_TELEMETRY_DISABLED="${DSH_TELEMETRY_DISABLED:-1}"
+
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-3080}"
+
+if [[ -z "${JINCODE_API_KEY:-}" ]]; then
+  echo "start.sh: JINCODE_API_KEY is not set — write it to $ENV_FILE (see termux/README.md)" >&2
+  exit 1
+fi
+
+echo "JinCode starting: http://$HOST:$PORT  (profile jincode, model ${JINCODE_MODEL:-gpt-4o-mini})"
+cd "$HARNESS_DIR"
+exec pnpm dsh --profile jincode --no-open --host "$HOST" --port "$PORT"

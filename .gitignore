@@ -1,0 +1,7 @@
+# Local harness checkout prepared by termux/setup.sh (the fork ships the patch, not the tree).
+/harness/
+/deepseek-harness/
+
+# Local Termux environment and profile artifacts.
+/termux/harness/
+*.log
