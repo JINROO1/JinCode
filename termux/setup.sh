@@ -100,7 +100,16 @@ if ! ( cd "$HARNESS_DIR" && git apply --check "$PATCH_FILE" 2>/dev/null ); then
   if ( cd "$HARNESS_DIR" && git apply --reverse --check "$PATCH_FILE" 2>/dev/null ); then
     log "fork patch already applied — skipping"
   else
-    die "jincode-harness.patch does not apply to $HARNESS_DIR — re-clone the harness or update the patch"
+    # An older fork state (a previous patch revision) is in this checkout. The
+    # checkout belongs to this script, so restore the pinned commit and apply the
+    # current patch. Git-ignored build output (node_modules, lib, dist) is kept.
+    log "harness carries an older fork state — restoring the pinned commit"
+    ( cd "$HARNESS_DIR" && git reset -q --hard HEAD && git clean -fdq ) \
+      || die "could not restore $HARNESS_DIR to the pinned commit"
+    ( cd "$HARNESS_DIR" && git apply --check "$PATCH_FILE" ) \
+      || die "jincode-harness.patch does not apply to the pinned commit — update the patch"
+    log "applying the JinCode fork patch (mobile-first UI)"
+    ( cd "$HARNESS_DIR" && git apply "$PATCH_FILE" )
   fi
 else
   log "applying the JinCode fork patch (mobile-first UI)"
