@@ -17,6 +17,7 @@ ejecutarse **en Termux sobre Android** con una **interfaz web mobile-first**.
 ```
 termux/
 ├── setup.sh                     # instalación completa (toolchain, fuente, build, perfil)
+├── check.sh                     # preflight: verifica el estado antes de arrancar (--deep compone el perfil)
 ├── start.sh                     # arranca el servidor web
 ├── profile.cordis.patch.yml     # capa de adaptación del perfil `jincode` (sandbox + modelo)
 ├── profile.package.json         # manifiesto del perfil (bundles: dsh-base + dsh-web-app)
@@ -89,6 +90,17 @@ compat:
 ```
 
 ## Ejecución
+
+Antes de arrancar, verifica que la instalación está completa (toolchain, patch del fork,
+build, perfil y clave de API; con `--deep` también compone el perfil y comprueba que no hay
+warnings):
+
+```bash
+bash termux/check.sh          # checks rápidos
+bash termux/check.sh --deep   # también compone el perfil jincode
+```
+
+Luego:
 
 ```bash
 bash termux/start.sh

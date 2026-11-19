@@ -8,7 +8,7 @@ configurable de **cualquier endpoint OpenAI-compatible**.
 ## Qué contiene este repositorio
 
 - `termux/` — la adaptación para Android/Termux:
-  - `setup.sh` / `start.sh` — instalación y arranque completos;
+  - `setup.sh` / `check.sh` / `start.sh` — instalación, preflight de diagnóstico y arranque;
   - `profile.cordis.patch.yml` — capa de perfil `jincode`: sandbox sin confinamiento
     (`danger-full-access` + `bash-local`, ya que Docker/bwrap/Landlock no existen en Android)
     y ruta de modelo OpenAI-compatible vía `llm-pi-ai`;
