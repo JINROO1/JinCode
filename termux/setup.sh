@@ -127,10 +127,13 @@ ensure_pnpm() {
   done
   log "installing pnpm@$want from npm (pure JavaScript, works on Termux)"
   npm install -g "pnpm@$want" || die "could not install pnpm@$want with npm"
+  # Put npm's global bin first so this pnpm wins over any other pnpm on PATH
+  # (e.g. a standalone install in ~/.local/share/pnpm or a PNPM_HOME entry).
+  export PATH="$GBIN:$PATH"
   hash -r
   have="$(pnpm --version 2>/dev/null || true)"
-  [[ "$have" == "$want" ]] || die "pnpm is '$have', expected $want. Run 'npm uninstall -g pnpm' and re-run setup.sh"
-  log "pnpm $have"
+  [[ "$have" == "$want" ]] || die "pnpm resolves to '$(command -v pnpm)' (version '$have'), expected $want. Remove the other pnpm (see 'which -a pnpm') and re-run setup.sh"
+  log "pnpm $have ($(command -v pnpm))"
 }
 PNPM_WANT="$(cd "$HARNESS_DIR" && node -p "require('./package.json').packageManager" | sed 's/^pnpm@//')"
 [[ -n "$PNPM_WANT" ]] || die "could not read the pnpm version from $HARNESS_DIR/package.json"
