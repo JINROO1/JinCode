@@ -52,7 +52,7 @@ bash termux/setup.sh
 
 `setup.sh`:
 
-1. instala Node.js y git (vía `pkg`) y activa pnpm (corepack);
+1. instala Node.js y git (vía `pkg`) y instala pnpm en la versión que pide el harness (vía npm);
 2. clona `deepseek-ai/deepseek-harness` en `harness/` en el commit fijado de
    `HARNESS_COMMIT` y aplica `patches/jincode-harness.patch` (la UI móvil del fork);
 3. instala dependencias (`pnpm install`) y compila todo (`pnpm run build`, host + cliente web);

@@ -77,12 +77,6 @@ fi
 [[ "$NODE_MAJOR" -ge 24 ]] && log "Node.js $(node -v) — engine requirement satisfied" \
   || log "Node.js $(node -v) — builds and runs, but the harness engine wants >= 24.9 (warning only)"
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  log "activating pnpm via corepack"
-  corepack enable || die "corepack unavailable — install pnpm manually (npm i -g pnpm)"
-  corepack prepare pnpm@11.28.5 --activate || die "could not activate pnpm"
-fi
-log "pnpm $(pnpm --version)"
 
 # ── 2. harness source + fork patch ──────────────────────────────────────────
 if [[ ! -d "$HARNESS_DIR/.git" ]]; then
@@ -112,6 +106,35 @@ else
 fi
 
 # ── 3. dependencies + build ─────────────────────────────────────────────────
+# pnpm version = packageManager field of the harness. Installed from npm as the
+# pure-JavaScript package: Corepack / @pnpm/exe ship native binaries that do not
+# exist for android-arm64, so they cannot run on Termux.
+ensure_pnpm() {
+  local want="$1" have
+  have="$(pnpm --version 2>/dev/null || true)"
+  if [[ "$have" == "$want" ]]; then
+    log "pnpm $have"
+    return
+  fi
+  command -v npm >/dev/null 2>&1 || die "npm not found (Termux: pkg install nodejs)"
+  # Remove only the Corepack shims left by an earlier run; npm refuses to overwrite them.
+  GBIN="$(npm prefix -g)/bin"
+  for f in pnpm pnpx; do
+    if [[ -L "$GBIN/$f" && "$(readlink "$GBIN/$f")" == *corepack* ]]; then
+      log "removing Corepack shim $GBIN/$f"
+      rm -f "$GBIN/$f"
+    fi
+  done
+  log "installing pnpm@$want from npm (pure JavaScript, works on Termux)"
+  npm install -g "pnpm@$want" || die "could not install pnpm@$want with npm"
+  hash -r
+  have="$(pnpm --version 2>/dev/null || true)"
+  [[ "$have" == "$want" ]] || die "pnpm is '$have', expected $want. Run 'npm uninstall -g pnpm' and re-run setup.sh"
+  log "pnpm $have"
+}
+PNPM_WANT="$(cd "$HARNESS_DIR" && node -p "require('./package.json').packageManager" | sed 's/^pnpm@//')"
+[[ -n "$PNPM_WANT" ]] || die "could not read the pnpm version from $HARNESS_DIR/package.json"
+ensure_pnpm "$PNPM_WANT"
 log "installing dependencies (engine-strict off for older Node)"
 ( cd "$HARNESS_DIR" && pnpm install --config.engine-strict=false )
 

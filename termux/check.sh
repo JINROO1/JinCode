@@ -66,7 +66,7 @@ fi
 if command -v pnpm >/dev/null 2>&1; then
   pass "pnpm $(pnpm --version)"
 else
-  warn "pnpm not found — activate it: corepack enable && corepack prepare pnpm@11.28.5 --activate"
+  warn "pnpm not found — setup.sh installs it (npm i -g pnpm@<version from the harness packageManager field>)"
 fi
 
 # ── 2. harness checkout + fork patch ───────────────────────────────────────
