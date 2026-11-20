@@ -70,7 +70,14 @@ export async function connect(
  * @returns the origin and token, or undefined when the URL carries no token.
  */
 export function parseAccessUrl(value: string): { origin: string; token: string } | undefined {
-  const url = new URL(value)
+  // An empty or malformed value is "no URL", not a crash: the caller prints the usage.
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
   const token = url.searchParams.get('token')
   if (token === null || token.length === 0) return undefined
   return { origin: url.origin, token }

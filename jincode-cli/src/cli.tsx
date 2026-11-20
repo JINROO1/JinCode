@@ -19,7 +19,8 @@ Uso:
   JINCODE_URL=<url-de-acceso> jincode
 
 La URL es la que imprime el servidor al arrancar (incluye el token).
-En Termux, con el servidor en marcha:  jincode "$(cat ~/.jincode/url 2>/dev/null)"
+En Termux: copie la línea «...: http://127.0.0.1:3080/?token=...» que imprime
+\`bash termux/start.sh\` y páselo entre comillas:  bash termux/jincode.sh "http://...?token=..."
 
 Opciones:
   -h, --help     muestra esta ayuda

@@ -130,3 +130,12 @@ test('parseMuxFrame accepts only well-formed stream frames', () => {
   assert.equal(parseMuxFrame('not json'), undefined)
   assert.equal(parseMuxFrame('{"type":"unknown","streamId":"s"}'), undefined)
 })
+
+test('parseAccessUrl: an empty, malformed, or non-HTTP value is "no URL", never an exception', () => {
+  assert.equal(parseAccessUrl(''), undefined)
+  assert.equal(parseAccessUrl('   '), undefined)
+  assert.equal(parseAccessUrl('no es una url'), undefined)
+  assert.equal(parseAccessUrl('ftp://127.0.0.1/?token=abc'), undefined)
+  assert.equal(parseAccessUrl('http://127.0.0.1:3080/'), undefined, 'a URL without the token is refused')
+  assert.equal(parseAccessUrl('http://127.0.0.1:3080/?token='), undefined)
+})
