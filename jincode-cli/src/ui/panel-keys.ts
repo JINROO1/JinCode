@@ -7,6 +7,17 @@ import { editField, type KeyLike } from './keys.ts'
 import { panelRowCount, panelSelection, CONFIRMED_PRESETS } from './Panel.tsx'
 import { PANEL_SECTIONS, groupableSessions, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
 import { groupRows } from '../app/workspace-model.ts'
+import {
+  SCHEDULE_FIELDS,
+  createRequest,
+  editRequest,
+  emptyScheduleForm,
+  fieldOf,
+  nextFieldIndex,
+  scheduleFormOf,
+  withField,
+  type ScheduleForm,
+} from '../app/schedule-model.ts'
 import { fileRowsOf } from '../app/file-model.ts'
 import { isErase } from './keys.ts'
 import {
@@ -33,6 +44,91 @@ function parseSectionText(text: string): { ok: true; value: Record<string, unkno
   }
 }
 
+/** The schedule form while it is open: its values and the field that has the focus. */
+export interface ScheduleEditor {
+  readonly form: ScheduleForm
+  readonly index: number
+}
+
+/**
+ * Keys of the schedule section. With the form open, the arrows move between
+ * fields and Enter saves; the form is validated here before anything is sent.
+ * In the list, n creates, Enter or e edits, p pauses or resumes, r runs, h reads
+ * the deliveries, and x (or c for the ended ones) asks twice before deleting.
+ * @param keys - the panel keys; `section` is the schedule section.
+ */
+function handleScheduleKey(keys: PanelKeys & { section: PanelSection }): void {
+  const { input, key, state, controller, field, setField, cursor, scheduleEditor, setScheduleEditor, armed, setArmed } = keys
+  const sessionOpen = state.activeId !== undefined
+  if (scheduleEditor !== undefined) {
+    const { index } = scheduleEditor
+    const form = withField(scheduleEditor.form, SCHEDULE_FIELDS[index] ?? 'title', textOf(field))
+    if (key.upArrow || key.downArrow) {
+      const next = nextFieldIndex(index, key.downArrow === true ? 1 : -1)
+      setScheduleEditor({ form, index: next })
+      setField(bufferOf(fieldOf(form, SCHEDULE_FIELDS[next] ?? 'title')))
+      return
+    }
+    if (key.return) {
+      const built = form.mode === 'edit' ? editRequest(form, state.activeId) : createRequest(form, state.activeId)
+      if (!built.ok) {
+        setScheduleEditor({ form, index })
+        controller.notePanel(built.error)
+        return
+      }
+      setScheduleEditor({ form, index })
+      void controller.saveSchedule(built.request, form.mode === 'edit').then((saved) => {
+        if (saved) {
+          setScheduleEditor(undefined)
+          setField(emptyBuffer())
+        }
+      })
+      return
+    }
+    setField(editField(field, input, key))
+    return
+  }
+
+  const tasks = state.panel.schedules ?? []
+  const task = tasks[cursor]
+  const wasArmed = armed
+  if (wasArmed !== undefined) setArmed(undefined)
+  if (key.ctrl) return
+  if (input === 'n') {
+    setScheduleEditor({ form: emptyScheduleForm(sessionOpen), index: 0 })
+    setField(emptyBuffer())
+    return
+  }
+  if (input === 'c') {
+    if (wasArmed === 'clear') {
+      void controller.clearEndedSchedules()
+      return
+    }
+    setArmed('clear')
+    controller.notePanel('pulsa c otra vez para eliminar todas las programaciones terminadas')
+    return
+  }
+  if (task === undefined) return
+  if (key.return || input === 'e') {
+    const form = scheduleFormOf(task)
+    setScheduleEditor({ form, index: 0 })
+    setField(bufferOf(form.title))
+  } else if (input === 'p') {
+    void controller.toggleSchedule(task)
+  } else if (input === 'r') {
+    void controller.runSchedule(task)
+  } else if (input === 'h') {
+    void controller.loadScheduleHistory(task)
+  } else if (input === 'x') {
+    if (wasArmed === `delete:${task.id}`) {
+      void controller.deleteSchedule(task)
+      return
+    }
+    setArmed(`delete:${task.id}`)
+    controller.notePanel(`pulsa x otra vez para eliminar «${task.title}»`)
+  }
+}
+
 export interface PanelKeys {
   input: string
   key: KeyLike
@@ -46,6 +142,11 @@ export interface PanelKeys {
   setPendingPreset: (value: string | undefined) => void
   editingItem: string | undefined
   setEditingItem: (value: string | undefined) => void
+  scheduleEditor: ScheduleEditor | undefined
+  setScheduleEditor: (value: ScheduleEditor | undefined) => void
+  /** A destructive schedule action waiting for its second key press. */
+  armed: string | undefined
+  setArmed: (value: string | undefined) => void
 }
 
 /**
@@ -55,7 +156,7 @@ export interface PanelKeys {
  * @param keys - the event and the state and setters it needs.
  */
 export function handlePanelKey(keys: PanelKeys): void {
-  const { input, key, state, controller, field, setField, cursor, setCursor, pendingPreset, setPendingPreset, editingItem, setEditingItem } = keys
+  const { input, key, state, controller, field, setField, cursor, setCursor, pendingPreset, setPendingPreset, editingItem, setEditingItem, scheduleEditor, setScheduleEditor, armed, setArmed } = keys
   const section = state.panel.section
   const moveSection = (delta: number): void => {
     const index = PANEL_SECTIONS.indexOf(section)
@@ -63,6 +164,8 @@ export function handlePanelKey(keys: PanelKeys): void {
     setCursor(0)
     setPendingPreset(undefined)
     setEditingItem(undefined)
+    setScheduleEditor(undefined)
+    setArmed(undefined)
     setField(emptyBuffer())
     void controller.setSection(next)
   }
@@ -71,14 +174,17 @@ export function handlePanelKey(keys: PanelKeys): void {
     return
   }
   const count = panelRowCount(state)
-  if (key.upArrow && editingItem === undefined) {
+  // The schedule form uses the arrows to move between its fields.
+  if (key.upArrow && editingItem === undefined && scheduleEditor === undefined) {
     setCursor(index => Math.max(0, index - 1))
     setPendingPreset(undefined)
+    setArmed(undefined)
     return
   }
-  if (key.downArrow && editingItem === undefined) {
+  if (key.downArrow && editingItem === undefined && scheduleEditor === undefined) {
     setCursor(index => Math.min(Math.max(0, count - 1), index + 1))
     setPendingPreset(undefined)
+    setArmed(undefined)
     return
   }
 
@@ -323,6 +429,11 @@ export function handlePanelKey(keys: PanelKeys): void {
         void controller.closeTerminal(target.id)
       }
     }
+    return
+  }
+
+  if (section === 'schedule') {
+    handleScheduleKey({ ...keys, section })
     return
   }
 

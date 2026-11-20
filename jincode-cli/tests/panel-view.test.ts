@@ -5,9 +5,13 @@ import { render } from 'ink-testing-library'
 import { Panel, bodyWindow, panelRowCount, panelSelection } from '../src/ui/Panel.tsx'
 import { handlePanelKey, type PanelKeys } from '../src/ui/panel-keys.ts'
 import { cellWidth } from '../src/ui/layout.ts'
-import { emptyBuffer, bufferOf, textOf } from '../src/ui/composer.ts'
+import { emptyBuffer, bufferOf, textOf, type Buffer } from '../src/ui/composer.ts'
 import type { AppController, AppState, PanelState } from '../src/app/controller.ts'
 import type { SettingsRow } from '../src/app/panel-client.ts'
+import type { ScheduleTask } from '../src/app/schedule-model.ts'
+import { emptyScheduleForm } from '../src/app/schedule-model.ts'
+import type { ScheduleEditor } from '../src/ui/panel-keys.ts'
+import type { KeyLike } from '../src/ui/keys.ts'
 
 // A snapshot with only the fields the panel reads; the rest is never touched.
 function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): AppState {
@@ -21,6 +25,8 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     terminals: undefined,
     goal: undefined,
     schedules: undefined,
+    scheduleLimit: undefined,
+    scheduleHistory: undefined,
     skills: undefined,
     note: undefined,
   }
@@ -30,6 +36,11 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     panel: { ...base, ...panel },
     ...extra,
   } as unknown as AppState
+}
+
+// A scheduled task with every field the Host sends; the test overrides what it reads.
+function scheduleTask(over: Partial<ScheduleTask> & { id: string; title: string; status: string }): ScheduleTask {
+  return { prompt: 'p', kind: 'every', timing: 'cada 3600 s', timingText: 'every 3600', scheduledAt: undefined, target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: [], updatedAt: '2026-11-19T10:00:00.000Z', executing: false, ...over }
 }
 
 // A controller that records what the panel asked for.
@@ -57,7 +68,7 @@ function keysFor(state: AppState, controller: AppController, overrides: Partial<
     pendingPreset: store.pending,
     setPendingPreset: value => { store.pending = value },
     editingItem: store.editing,
-    setEditingItem: value => { store.editing = value },
+    scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: value => { store.editing = value },
     ...overrides,
   }
 }
@@ -70,7 +81,7 @@ test('every line of every section fits the width it was laid out for', () => {
     { section: 'permissions', presets: { options: ['read-only', 'danger-full-access'], defaultPreset: 'danger-full-access' } },
     { section: 'settings', settings: [{ ns: 'agent', revision: 1, applies: 'next-turn', writable: false, value: { long }, user: undefined, secrets: [] }] },
     { section: 'goals', goal: { id: 'g', revision: 1, objective: long, phase: 'active', roundsStarted: 1, maxGoalRounds: 8 } },
-    { section: 'schedule', schedules: [{ id: 's', title: long, status: 'active' }] },
+    { section: 'schedule', schedules: [scheduleTask({ id: 's', title: long, status: 'active' })] },
     { section: 'skills', skills: [{ name: 'pdf', description: long }] },
   ]
   for (const width of [16, 30, 60]) {
@@ -182,7 +193,7 @@ test('s steers, x removes and e opens an edit of the queued message under the cu
   const keys = keysFor(state, controller, {
     input: 'e',
     cursor: 1,
-    setEditingItem: value => { edited = value },
+    scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: value => { edited = value },
     setField: value => { field = value },
   })
   handlePanelKey(keys)
@@ -199,7 +210,7 @@ test('while editing, Enter saves the edit and Esc-style cancel is handled by the
     key: { return: true },
     editingItem: editing,
     field,
-    setEditingItem: value => { editing = value },
+    scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: value => { editing = value },
     setField: value => { field = value },
   })
   handlePanelKey(keys)
@@ -335,7 +346,7 @@ function settingsSession(settings: SettingsRow[], controller: AppController) {
       pendingPreset: undefined,
       setPendingPreset: () => {},
       editingItem: store.editing,
-      setEditingItem: value => { store.editing = value },
+      scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: value => { store.editing = value },
     })
   }
   return { press, store }
@@ -416,7 +427,7 @@ test('workspaces: n creates (blank path = default); x needs a second press; p an
       field: store.field, setField: value => { store.field = value },
       cursor: store.cursor, setCursor: value => { store.cursor = typeof value === 'function' ? value(store.cursor) : value },
       pendingPreset: store.pending, setPendingPreset: value => { store.pending = value },
-      editingItem: store.editing, setEditingItem: value => { store.editing = value },
+      editingItem: store.editing, scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: value => { store.editing = value },
     })
   }
   press('n')
@@ -449,7 +460,7 @@ test('files: Enter opens a folder, Backspace goes up, / searches; in a page, [ ]
       field: store.field, setField: value => { store.field = value },
       cursor: store.cursor, setCursor: value => { store.cursor = typeof value === 'function' ? value(store.cursor) : value },
       pendingPreset: undefined, setPendingPreset: () => {},
-      editingItem: store.editing, setEditingItem: value => { store.editing = value },
+      editingItem: store.editing, scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: value => { store.editing = value },
     })
   }
   press('', { return: true })
@@ -469,7 +480,7 @@ test('files: Enter opens a folder, Backspace goes up, / searches; in a page, [ ]
       input, key, state: paged, controller,
       field: store.field, setField: () => {}, cursor: 0, setCursor: () => {},
       pendingPreset: undefined, setPendingPreset: () => {},
-      editingItem: undefined, setEditingItem: () => {},
+      editingItem: undefined, scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: () => {},
     })
   }
   pagedPress(']')
@@ -497,7 +508,7 @@ test('terminals: Enter opens, n chooses a shell, r renames, x closes; the choose
   handlePanelKey(renaming)
   assert.equal(renaming.setEditingItem.length, 1)
   const store = { editing: 'rename' as string | undefined, field: bufferOf('Build') }
-  const typed = (overrides: Partial<PanelKeys>) => keysFor(state, controller, { editingItem: store.editing, field: store.field, setEditingItem: value => { store.editing = value }, setField: value => { store.field = value }, ...overrides })
+  const typed = (overrides: Partial<PanelKeys>) => keysFor(state, controller, { editingItem: store.editing, field: store.field, scheduleEditor: undefined, setScheduleEditor: () => {}, armed: undefined, setArmed: () => {}, setEditingItem: value => { store.editing = value }, setField: value => { store.field = value }, ...overrides })
   handlePanelKey(typed({ input: '!', key: {} }))
   assert.equal(textOf(store.field), 'Build!')
   calls.length = 0
@@ -513,4 +524,124 @@ test('terminals: Enter opens, n chooses a shell, r renames, x closes; the choose
   handlePanelKey(down)
   handlePanelKey(keysFor(chooser, controller, { key: { return: true }, cursor: 1 }))
   assert.ok(calls.includes('startTerminal "/bin/zsh"'), 'Enter starts the shell under the cursor')
+})
+
+// Keys with a small store behind the setters, so one test can press several keys in a row.
+function scheduleHarness(state: AppState, controller: AppController) {
+  const store: { field: Buffer; editor: ScheduleEditor | undefined; armed: string | undefined } = { field: emptyBuffer(), editor: undefined, armed: undefined }
+  const press = (input: string, key: KeyLike = {}): void => {
+    handlePanelKey(keysFor(state, controller, {
+      input,
+      key,
+      field: store.field,
+      setField: value => { store.field = value },
+      scheduleEditor: store.editor,
+      setScheduleEditor: value => { store.editor = value },
+      armed: store.armed,
+      setArmed: value => { store.armed = value },
+    }))
+  }
+  const type = (text: string): void => {
+    for (const char of text) press(char)
+  }
+  return { store, press, type }
+}
+
+test('schedules: the list shows each task with its state and timing; the form names its fields', () => {
+  const task = scheduleTask({ id: 's1', title: 'Diario', status: 'paused' })
+  const list = render(React.createElement(Panel, {
+    state: stateWith({ section: 'schedule', schedules: [task], scheduleLimit: 60, scheduleHistory: { id: 's1', records: [{ scheduledAt: '2026-11-19T10:00:00.000Z', deliveredAt: '2026-11-19T10:00:01.000Z', targetSessionId: 's-1', prompt: 'p' }] } }),
+    width: 100, height: 24, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  const frame = list.lastFrame() ?? ''
+  assert.match(frame, /Diario · pausada/)
+  assert.match(frame, /cada 3600 s/)
+  assert.match(frame, /al menos cada 60 s/)
+  assert.match(frame, /2026-11-19 10:00 · p/, 'the selected task shows its deliveries')
+  list.unmount()
+
+  const empty = render(React.createElement(Panel, {
+    state: stateWith({ section: 'schedule', schedules: [] }), width: 100, height: 12, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  assert.match(empty.lastFrame() ?? '', /No hay tareas programadas\. Pulsa n para crear una\./)
+  empty.unmount()
+
+  const form = render(React.createElement(Panel, {
+    state: stateWith({ section: 'schedule', schedules: [task] }),
+    width: 100, height: 24, cursor: 0, field: bufferOf('Resumen'),
+    editing: undefined, pendingPreset: undefined,
+    schedule: { form: { ...emptyScheduleForm(true), title: '' }, index: 0 },
+  }))
+  const shown = form.lastFrame() ?? ''
+  assert.match(shown, /Nueva programación/)
+  assert.match(shown, /› Título: Resumen▌/)
+  assert.match(shown, /Cuándo: every 3600/)
+  assert.match(shown, /Destino: sesión actual/)
+  assert.match(shown, /after 600/, 'the timing forms are shown')
+  form.unmount()
+})
+
+test('schedules: n opens an empty form; Enter reports a blank title and sends nothing', () => {
+  const { controller, calls } = fakeController()
+  const harness = scheduleHarness(stateWith({ section: 'schedule', schedules: [] }), controller)
+  harness.press('n')
+  assert.equal(harness.store.editor?.form.mode, 'create')
+  assert.equal(harness.store.editor?.form.target, 'sesión actual')
+  harness.press('', { return: true })
+  assert.deepEqual(calls, ['notePanel "el título no puede estar vacío"'])
+  assert.equal(harness.store.editor !== undefined, true, 'the form stays open with its text')
+})
+
+test('schedules: a typed form is saved with the request the form built, moving between fields with the arrows', () => {
+  const { controller, calls } = fakeController()
+  const harness = scheduleHarness(stateWith({ section: 'schedule', schedules: [] }), controller)
+  harness.press('n')
+  harness.type('Resumen')
+  harness.press('', { downArrow: true })
+  assert.equal(harness.store.editor?.index, 1)
+  harness.type('hola')
+  harness.press('', { return: true })
+  assert.equal(calls.at(-1), 'saveSchedule {"title":"Resumen","prompt":"hola","timing":{"kind":"every","every_seconds":3600},"target":{"kind":"session","sessionId":"s-1"}} false')
+})
+
+test('schedules: x asks twice before deleting, and any other key drops the question', () => {
+  const { controller, calls } = fakeController()
+  const task = scheduleTask({ id: 's1', title: 'Diario', status: 'active' })
+  const harness = scheduleHarness(stateWith({ section: 'schedule', schedules: [task] }), controller)
+  harness.press('x')
+  assert.equal(harness.store.armed, 'delete:s1')
+  assert.deepEqual(calls, ['notePanel "pulsa x otra vez para eliminar «Diario»"'])
+  harness.press('p')
+  assert.equal(harness.store.armed, undefined, 'another key drops the question')
+  assert.equal(calls.at(-1)?.startsWith('toggleSchedule'), true, 'p still acts on the task under the cursor')
+  harness.press('x')
+  harness.press('x')
+  assert.equal(calls.at(-1)?.startsWith('deleteSchedule'), true)
+})
+
+test('schedules: c asks twice before removing the ended ones; p, r and h act on the task under the cursor', () => {
+  const { controller, calls } = fakeController()
+  const task = scheduleTask({ id: 's1', title: 'Diario', status: 'paused' })
+  const harness = scheduleHarness(stateWith({ section: 'schedule', schedules: [task] }), controller)
+  harness.press('c')
+  assert.equal(calls.some(call => call.startsWith('clearEndedSchedules')), false, 'the first c only asks')
+  harness.press('c')
+  assert.equal(calls.some(call => call.startsWith('clearEndedSchedules')), true)
+  harness.press('r')
+  harness.press('h')
+  assert.equal(calls.filter(call => call.startsWith('runSchedule')).length, 1)
+  assert.equal(calls.filter(call => call.startsWith('loadScheduleHistory')).length, 1)
+})
+
+test('schedules: e opens the form with the task as the Host has it, typed so it parses again', () => {
+  const { controller, calls } = fakeController()
+  const task = scheduleTask({ id: 's1', title: 'Diario', status: 'paused', timingText: 'daily 09:00:00 UTC', updatedAt: '2026-11-19T10:00:00.000Z' })
+  const harness = scheduleHarness(stateWith({ section: 'schedule', schedules: [task] }), controller)
+  harness.press('e')
+  assert.equal(harness.store.editor?.form.mode, 'edit')
+  assert.equal(harness.store.editor?.form.timing, 'daily 09:00:00 UTC')
+  assert.equal(harness.store.editor?.form.expectedUpdatedAt, '2026-11-19T10:00:00.000Z')
+  assert.equal(textOf(harness.store.field), 'Diario')
+  harness.press('', { return: true })
+  assert.equal(calls.at(-1)?.startsWith('saveSchedule'), true, 'an unchanged edit is a valid request')
 })

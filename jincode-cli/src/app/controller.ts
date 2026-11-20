@@ -42,11 +42,11 @@ import {
   type GoalView,
   type PresetView,
   type QueueRow,
-  type ScheduleRow,
   type SettingsRow,
   type SettingOp,
   type SkillRow,
 } from './panel-client.ts'
+import { mutationProblem, type ScheduleForm, type ScheduleRecord, type ScheduleTask } from './schedule-model.ts'
 
 /** The overlay covering the conversation, if any. */
 export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help' | 'panel' | 'attach'
@@ -119,7 +119,12 @@ export interface PanelState {
   readonly files: FilesView | undefined
   /** `null` when the Session has no goal; undefined before the first read. */
   readonly goal: GoalView | null | undefined
-  readonly schedules: readonly ScheduleRow[] | undefined
+  /** Every scheduled task; undefined until the section loads. */
+  readonly schedules: readonly ScheduleTask[] | undefined
+  /** Minimum seconds between deliveries that open a new Session; undefined when the Host does not say. */
+  readonly scheduleLimit: number | undefined
+  /** The saved deliveries of the task read last, if any. */
+  readonly scheduleHistory: { readonly id: string; readonly records: readonly ScheduleRecord[] } | undefined
   readonly skills: readonly SkillRow[] | undefined
   /** The Session's terminals and the shell chooser; undefined until the section loads. */
   readonly terminals: TerminalsView | undefined
@@ -225,7 +230,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, skills: undefined, terminals: undefined, note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, note: undefined },
     interactions: [],
     terminal: undefined,
     attachments: [],
@@ -643,7 +648,8 @@ export class AppController {
           return
         }
         case 'schedule': {
-          this.patchPanel({ schedules: await this.panelClient.schedules() })
+          const [schedules, scheduleLimit] = await Promise.all([this.panelClient.schedules(), this.panelClient.scheduleLimit()])
+          this.patchPanel({ schedules, scheduleLimit })
           return
         }
         case 'skills': {
@@ -917,6 +923,93 @@ export class AppController {
       await this.panelClient.clearGoal(sessionId, goal)
       this.patchPanel({ note: 'meta eliminada' })
       await this.loadSection('goals')
+    })
+  }
+
+  /**
+   * Create a scheduled task, or change one, from a form the panel already validated.
+   * @param request - the `schedule/create` or `schedule/edit` request.
+   * @param editing - whether the request changes an existing task.
+   * @returns true when the Host saved it, so the form can close.
+   */
+  async saveSchedule(request: Record<string, unknown>, editing: boolean): Promise<boolean> {
+    let saved = false
+    await this.attempt(async () => {
+      if (!editing) {
+        await this.panelClient.createSchedule(request)
+        saved = true
+        this.patchPanel({ note: 'programación creada' })
+      } else {
+        const problem = mutationProblem(await this.panelClient.editSchedule(request))
+        if (problem !== undefined) {
+          this.patchPanel({ note: problem })
+        } else {
+          saved = true
+          this.patchPanel({ note: 'programación guardada' })
+        }
+      }
+      await this.loadSection('schedule')
+    })
+    return saved
+  }
+
+  /**
+   * Pause or resume a scheduled task. Ended tasks cannot change.
+   * @param task - the task as the panel last read it.
+   */
+  async toggleSchedule(task: ScheduleTask): Promise<void> {
+    if (task.status === 'ended') {
+      this.patchPanel({ note: 'una programación terminada no se puede pausar ni reanudar' })
+      return
+    }
+    await this.attempt(async () => {
+      const problem = mutationProblem(await this.panelClient.editSchedule({ id: task.id, action: 'update', patch: { active: task.status !== 'active' }, expectedUpdatedAt: task.updatedAt }))
+      this.patchPanel({ note: problem ?? (task.status === 'active' ? 'programación pausada' : 'programación reanudada') })
+      await this.loadSection('schedule')
+    })
+  }
+
+  /**
+   * Deliver a scheduled task now.
+   * @param task - the task.
+   */
+  async runSchedule(task: ScheduleTask): Promise<void> {
+    await this.attempt(async () => {
+      await this.panelClient.runSchedule(task.id)
+      this.patchPanel({ note: 'entrega pedida; aparecerá en el historial' })
+      await this.loadSection('schedule')
+    })
+  }
+
+  /**
+   * Read the saved deliveries of a task into the panel.
+   * @param task - the task.
+   */
+  async loadScheduleHistory(task: ScheduleTask): Promise<void> {
+    await this.attempt(async () => {
+      const records = await this.panelClient.scheduleHistory(task.id)
+      this.patchPanel({ scheduleHistory: { id: task.id, records }, note: records.length === 0 ? 'sin entregas todavía' : undefined })
+    })
+  }
+
+  /**
+   * Delete a scheduled task and its saved deliveries.
+   * @param task - the task as the panel last read it.
+   */
+  async deleteSchedule(task: ScheduleTask): Promise<void> {
+    await this.attempt(async () => {
+      const problem = mutationProblem(await this.panelClient.editSchedule({ id: task.id, action: 'delete', expectedUpdatedAt: task.updatedAt }))
+      this.patchPanel({ note: problem ?? 'programación eliminada' })
+      await this.loadSection('schedule')
+    })
+  }
+
+  /** Remove every ended scheduled task; the Host answers how many it removed. */
+  async clearEndedSchedules(): Promise<void> {
+    await this.attempt(async () => {
+      const count = await this.panelClient.clearEndedSchedules()
+      this.patchPanel({ note: `${count} terminadas eliminadas` })
+      await this.loadSection('schedule')
     })
   }
 

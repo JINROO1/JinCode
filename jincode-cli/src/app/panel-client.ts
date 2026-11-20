@@ -6,6 +6,7 @@
 import { call, type RemoteConnection, type RemoteMux } from '../wire/remote.ts'
 import { normalizeWorkspace, type WorkspaceRow } from './workspace-model.ts'
 import { normalizeListing, normalizeMatches, normalizePage, type FilePage, type FileEntry, type SearchResult } from './file-model.ts'
+import { normalizeRecords, normalizeTask, normalizeTasks, type ScheduleRecord, type ScheduleTask } from './schedule-model.ts'
 
 /** One message waiting for the running turn. */
 export interface QueueRow {
@@ -50,13 +51,6 @@ export interface GoalView {
   readonly phase: string
   readonly roundsStarted: number
   readonly maxGoalRounds: number
-}
-
-/** One scheduled task, read-only. */
-export interface ScheduleRow {
-  readonly id: string
-  readonly title: string
-  readonly status: string
 }
 
 /** One skill the Session can use. */
@@ -138,24 +132,6 @@ export function normalizeGoal(value: unknown): GoalView | undefined {
   }
 }
 
-/**
- * Read the schedule page. Titles fall back to the id, and status to `unknown`.
- * @param value - the `schedule/list` result.
- * @returns the tasks on the page.
- */
-export function normalizeSchedule(value: unknown): ScheduleRow[] {
-  if (!isRecord(value) || !Array.isArray(value['items'])) return []
-  const rows: ScheduleRow[] = []
-  for (const item of value['items']) {
-    if (!isRecord(item) || typeof item['id'] !== 'string') continue
-    rows.push({
-      id: item['id'],
-      title: typeof item['title'] === 'string' && item['title'].length > 0 ? item['title'] : item['id'],
-      status: typeof item['status'] === 'string' ? item['status'] : 'unknown',
-    })
-  }
-  return rows
-}
 
 /**
  * Read the skills list.
@@ -405,9 +381,56 @@ export class PanelClient {
     await call(this.connection, 'goals/clear', { agentId, ref: { id: goal.id, revision: goal.revision } })
   }
 
-  /** @returns the first page of scheduled tasks. */
-  async schedules(): Promise<ScheduleRow[]> {
-    return normalizeSchedule(await call(this.connection, 'schedule/list', { request: {} }))
+  /** @returns every scheduled task, active, paused and ended. */
+  async schedules(): Promise<ScheduleTask[]> {
+    return normalizeTasks(await call(this.connection, 'schedule/catalog', {}))
+  }
+
+  /** @returns the minimum seconds between deliveries that open a new Session. */
+  async scheduleLimit(): Promise<number | undefined> {
+    const value = await call<unknown>(this.connection, 'schedule/deliveryLimits', {})
+    return isRecord(value) && typeof value['newSessionIntervalSeconds'] === 'number' ? value['newSessionIntervalSeconds'] : undefined
+  }
+
+  /**
+   * Create a scheduled task.
+   * @param request - the `schedule/create` request built by the form.
+   * @returns the saved task.
+   */
+  async createSchedule(request: Record<string, unknown>): Promise<ScheduleTask | undefined> {
+    return normalizeTask(await call(this.connection, 'schedule/create', { request }))
+  }
+
+  /**
+   * Change a scheduled task. The Host answers a stale revision with a `code`, not an error.
+   * @param request - the `schedule/edit` request (update or delete).
+   * @returns the Host answer, which may carry a `code`.
+   */
+  async editSchedule(request: Record<string, unknown>): Promise<unknown> {
+    return call(this.connection, 'schedule/edit', { request })
+  }
+
+  /**
+   * Run a scheduled task now.
+   * @param id - the task.
+   */
+  async runSchedule(id: string): Promise<void> {
+    await call(this.connection, 'schedule/run', { request: { id } })
+  }
+
+  /**
+   * Read the saved deliveries of a task, newest first.
+   * @param id - the task.
+   * @returns the deliveries in the page.
+   */
+  async scheduleHistory(id: string): Promise<ScheduleRecord[]> {
+    return normalizeRecords(await call(this.connection, 'schedule/history', { request: { id, limit: 20 } }))
+  }
+
+  /** @returns how many ended tasks the Host removed. */
+  async clearEndedSchedules(): Promise<number> {
+    const value = await call<unknown>(this.connection, 'schedule/deleteInactive', {})
+    return isRecord(value) && typeof value['deleted'] === 'number' ? value['deleted'] : 0
   }
 
   /**

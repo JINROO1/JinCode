@@ -45,7 +45,7 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Permisos | Enter aplica el preset. `danger-full-access` pide un segundo Enter porque no tiene confinamiento; Esc cancela |
 | Ajustes | ↑↓ eligen un campo (agrupado por espacio de nombres). Enter edita el valor; Enter guarda, Esc cancela. `u` quita el valor propio (✎). `j` edita la sección entera en JSON (no disponible si tiene secretos). Con el perfil de solo lectura no se escribe nada |
 | Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío) |
-| Programaciones | ↑↓ listan las tareas programadas. Solo lectura |
+| Programaciones | ↑↓ listan todas las tareas, con su estado (activa, pausada, terminada, ejecutando) y su temporización. `n` crea; Enter o `e` edita; con el formulario abierto, ↑↓ cambian de campo, Enter guarda y Esc cancela. Temporizaciones: `after 600`, `every 3600`, `at 2026-12-01 09:30 Europe/Madrid`, `daily 09:00 UTC`, `weekly 09:00 UTC 1,3,5`, `cron 0 9 * * 1 UTC`, `rrule DTSTART:…\|RRULE:…`. Destinos: «sesión actual», «nueva sesión», «nueva sesión una vez». `p` pausa o reanuda; `r` ejecuta ahora; `h` lee las entregas; `x` elimina (dos veces); `c` quita las terminadas (dos veces). Una tarea terminada no se pausa |
 | Espacios | Lista en vivo (stream `workspace/follow`): cada espacio con sus sesiones, después «Sin espacio» y «Archivadas». `n` crea un espacio con la ruta escrita (vacío = espacio predeterminado). En un espacio: `r` renombra, `x` lo quita (dos veces; sus archivos y sesiones se conservan), `[` `]` lo suben o bajan. En una sesión: `p` fija o desfija, `a` archiva o restaura (una sesión con turno en curso no se archiva), `[` `]` la mueven dentro de su espacio |
 | Archivos | Explora la carpeta raíz del espacio de la sesión activa (`workspaceFiles/list`). Enter abre una carpeta o un archivo (en páginas de 40 líneas, `[` `]` pasan página); Backspace sube, o cierra la página o la búsqueda. `/` busca por nombre (`workspaceFiles/search`); `h` incluye los ocultos en las búsquedas; `r` recarga. Si el Host corta la lista, se avisa |
 | Terminal | Lista las terminales de la sesión activa (`terminal/watch`, en vivo). Enter la abre a pantalla completa; `n` elige shell (`terminal/shells`) y la crea en la carpeta de la sesión; `r` renombra; `x` la cierra (`terminal/close`). Con «terminó (código N)» la terminal ya no corre; Enter sigue mostrando su última pantalla |
@@ -143,7 +143,9 @@ controlador en `tests/controller.test.ts`.
 | 7b | Espacio de trabajo: crear, renombrar, quitar, ordenar, fijar y archivar (`workspace/*`, stream `workspace/follow`) | Hecho, probado en vivo |
 | 7c | Archivos del espacio (`workspaceFiles/*`: listar, leer por páginas, buscar) | Hecho, probado en vivo |
 | 7d | Terminal (`terminal/*`: shells, crear, adjuntar a pantalla completa con acuses de entrada, renombrar, cerrar, retener, `watch` del listado) | Hecho, probado en vivo |
-| 8 | Programaciones (`schedule/create`, `edit`, `run`, `history`); metas editar (`goals/edit`); subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
+| 7e | Programaciones completas (`schedule/*`): crear con siete temporizaciones y tres destinos, editar con revisión, pausar o reanudar, ejecutar, historial, eliminar y quitar terminadas | Hecho, probado en vivo |
+| 7f | Metas: editar (`goals/edit`) | Pendiente |
+| 8 | Subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
 responder), aprobación `y` (la herramienta se ejecuta y el turno termina con «completado») y
@@ -165,6 +167,14 @@ escritura recibe su acuse en orden.
 Fase 7c, verificación en vivo: listado de la raíz con carpetas primero; búsqueda `editorconfig`
 sin ocultos (sin resultados, como indica el Host) y con `h` (1 resultado); apertura del archivo en
 su página con numeración.
+
+Fase 7e, verificación en vivo: crear «Prueba-PTY» con `every 3600` y destino «sesión actual»; la lista
+la muestra como «activa» con «cada 3600 s». `p` la pausa («pausada») y la reanuda. `h` lista la
+entrega `hola-pty` tras `r` (ejecutar ahora). Editar con la temporización `bogus` muestra el aviso
+de sintaxis y mantiene el formulario abierto. `x` pide confirmación y la segunda pulsación elimina
+(«programación eliminada»). `c` pide confirmación y responde «0 terminadas eliminadas». En el Host,
+un cambio con una `updatedAt` obsoleta devuelve `schedule_conflict` y no cambia nada; la CLI lo
+muestra como aviso.
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

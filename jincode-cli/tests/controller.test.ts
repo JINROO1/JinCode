@@ -8,7 +8,10 @@ import { AppController, keyRefFor, matchesTitleOrFolder, titleOf } from '../src/
 import { normalizeCatalog, summaryOf } from '../src/app/session-client.ts'
 
 // A fake Host with the response shapes observed on the real server.
+let scheduleSeq = 0
+
 const state = {
+  schedules: [{ id: 'sch-1', kind: 'every', title: 'Resumen diario', prompt: 'resume', everySeconds: 3600, target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T09:00:00.000Z', updatedAt: '2026-11-19T09:00:00.000Z', history: [] as unknown[] }] as any[],
   keys: new Set<string>(),
   searchDisabled: false,
   calls: [] as Array<{ method: string; args: any }>,
@@ -130,7 +133,41 @@ function respond(method: string, args: any): unknown {
     case 'goals/resume': if (state.goal) state.goal = { ...state.goal, phase: 'active', revision: state.goal.revision + 1 }; return {}
     case 'goals/complete': if (state.goal) state.goal = { ...state.goal, phase: 'complete', revision: state.goal.revision + 1 }; return {}
     case 'goals/clear': state.goal = null; return {}
-    case 'schedule/list': return { items: [{ id: 'sch-1', title: 'Resumen diario', status: 'active' }], shown: 1, total: 1 }
+    case 'schedule/catalog': return state.schedules.map(item => ({ ...item }))
+    case 'schedule/deliveryLimits': return { newSessionIntervalSeconds: 60 }
+    case 'schedule/create': {
+      scheduleSeq += 1
+      const stamp = `2026-11-19T10:00:0${scheduleSeq}.000Z`
+      const item = { id: `sch-new-${scheduleSeq}`, kind: 'every', title: args.title, prompt: args.prompt, everySeconds: args.timing.every_seconds, target: args.target, involvedSessionIds: [], status: 'active', createdAt: stamp, updatedAt: stamp, history: [] as unknown[] }
+      state.schedules.push(item)
+      return item
+    }
+    case 'schedule/edit': {
+      const item = state.schedules.find(entry => entry.id === args.id)
+      if (!item) throw new Error('schedule not found')
+      if (args.expectedUpdatedAt !== undefined && args.expectedUpdatedAt !== item.updatedAt) return { id: item.id, code: 'schedule_conflict' }
+      if (args.action === 'delete') {
+        state.schedules = state.schedules.filter(entry => entry.id !== item.id)
+        return { id: item.id, deleted: true }
+      }
+      const patch = args.patch
+      if (patch.title !== undefined) item.title = patch.title
+      if (patch.active !== undefined) item.status = patch.active ? 'active' : 'paused'
+      item.updatedAt = `2026-11-19T10:01:0${scheduleSeq}.000Z`
+      return item
+    }
+    case 'schedule/run': {
+      const item = state.schedules.find(entry => entry.id === args.id)
+      if (item) item.history.push({ scheduledAt: item.updatedAt, deliveredAt: item.updatedAt, messageId: 'm', targetSessionId: 's-1', prompt: item.prompt })
+      if (item) item.updatedAt = `2026-11-19T10:02:0${scheduleSeq}.000Z`
+      return null
+    }
+    case 'schedule/history': return { id: args.id, records: state.schedules.find(entry => entry.id === args.id)?.history ?? [], earlierRecordsUnavailable: false, earlierRecordsPruned: false, retention: { days: 30, records: 200 } }
+    case 'schedule/deleteInactive': {
+      const before = state.schedules.length
+      state.schedules = state.schedules.filter(entry => entry.status !== 'ended')
+      return { deleted: before - state.schedules.length }
+    }
     case 'skills/list': return { skills: [{ name: 'pdf', description: 'Lee PDF' }] }
     case 'session/prompt': return { accepted: true }
     case 'session/cancel': return {}
@@ -389,6 +426,7 @@ test('the panel reads each section from its own endpoint and keeps the data in t
     assert.equal(app.snapshot().panel.goal, null)
     await app.setSection('schedule')
     assert.equal(app.snapshot().panel.schedules?.[0]?.title, 'Resumen diario')
+    assert.equal(app.snapshot().panel.scheduleLimit, 60)
     await app.setSection('skills')
     assert.equal(app.snapshot().panel.skills?.[0]?.name, 'pdf')
     assert.equal(app.snapshot().overlay, 'panel')
@@ -611,6 +649,36 @@ test('workspaces: pin, archive, move; archiving a running Session is refused bef
     state.workspaces = [{ workspaceId: 'ws-a', path: '/tmp/ws-a', title: 'Alfa', sessionIds: ['s-1'], createdAt: 'x', updatedAt: 'x' }]
     state.pinnedSessionIds = []
     state.archivedSessionIds = []
+    app.dispose()
+  }
+})
+
+test('schedules: create, edit, pause, run, read the deliveries, delete; a stale edit is reported and changes nothing', async () => {
+  state.schedules = [{ id: 'sch-1', kind: 'every', title: 'Resumen diario', prompt: 'resume', everySeconds: 3600, target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T09:00:00.000Z', updatedAt: '2026-11-19T09:00:00.000Z', history: [] as unknown[] }] as any[]
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('schedule')
+    const created = await app.saveSchedule({ title: 'Nueva', prompt: 'p', timing: { kind: 'every', every_seconds: 600 }, target: { kind: 'session', sessionId: 's-1' } }, false)
+    assert.equal(created, true)
+    assert.equal(app.snapshot().panel.schedules?.length, 2)
+    const task = app.snapshot().panel.schedules?.find(item => item.title === 'Nueva')
+    assert.ok(task, 'the new task is listed')
+    await app.toggleSchedule(task)
+    assert.equal(app.snapshot().panel.schedules?.find(item => item.id === task.id)?.status, 'paused')
+    await app.runSchedule(task)
+    await app.loadScheduleHistory(task)
+    assert.equal(app.snapshot().panel.scheduleHistory?.records.length, 1, 'the run is saved as a delivery')
+    const stale = await app.saveSchedule({ id: task.id, action: 'update', patch: { title: 'Vieja' }, expectedUpdatedAt: '2000-01-01T00:00:00.000Z' }, true)
+    assert.equal(stale, false, 'a stale edit does not close the form')
+    assert.match(app.snapshot().panel.note ?? '', /cambió desde que la leíste/)
+    assert.equal(app.snapshot().panel.schedules?.find(item => item.id === task.id)?.title, 'Nueva', 'nothing changed')
+    const fresh = app.snapshot().panel.schedules?.find(item => item.id === task.id)
+    await app.deleteSchedule(fresh!)
+    assert.equal(app.snapshot().panel.schedules?.some(item => item.id === task.id), false)
+    assert.equal(app.snapshot().panel.note, 'programación eliminada')
+  } finally {
+    state.schedules = [{ id: 'sch-1', kind: 'every', title: 'Resumen diario', prompt: 'resume', everySeconds: 3600, target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T09:00:00.000Z', updatedAt: '2026-11-19T09:00:00.000Z', history: [] as unknown[] }] as any[]
     app.dispose()
   }
 })

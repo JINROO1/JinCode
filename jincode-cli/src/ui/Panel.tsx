@@ -16,6 +16,15 @@ import { fieldSummary, settingsFields } from '../app/settings-model.ts'
 import { groupRows } from '../app/workspace-model.ts'
 import { fileRowsOf, sizeLabel } from '../app/file-model.ts'
 import { stateText, type TerminalInfo } from '../app/terminal-model.ts'
+import {
+  SCHEDULE_FIELDS,
+  SCHEDULE_FIELD_LABEL,
+  TIMING_HINT,
+  fieldOf,
+  recordLine,
+  statusLabelOf,
+} from '../app/schedule-model.ts'
+import type { ScheduleEditor } from './panel-keys.ts'
 
 /**
  * One line that says what a terminal is: its name, shell, state and who opened it.
@@ -68,6 +77,10 @@ export interface PanelProps {
   readonly editing: string | undefined
   /** Preset waiting for confirmation. */
   readonly pendingPreset: string | undefined
+  /** The schedule form, while it is open. */
+  readonly schedule?: ScheduleEditor
+  /** A schedule action waiting for its second key press. */
+  readonly armed?: string
 }
 
 /** What a section renders: a scrollable body, the row to keep in view, and fixed hints. */
@@ -368,14 +381,30 @@ export function sectionView(props: PanelProps): SectionView {
       return { body, focus, footer }
     }
     case 'schedule': {
-      if (panel.schedules === undefined) return { body: [{ text: 'Cargando las programaciones…', tone: 'muted' }], focus, footer }
-      if (panel.schedules.length === 0) {
-        add('No hay tareas programadas.', 'muted')
+      if (props.schedule !== undefined) {
+        const { form, index } = props.schedule
+        add(form.mode === 'edit' ? 'Editar programación' : 'Nueva programación', 'brand', { bold: true })
+        SCHEDULE_FIELDS.forEach((name, position) => {
+          const active = position === index
+          const value = active ? textOf(field) : fieldOf(form, name)
+          row(`${active ? '›' : ' '} ${SCHEDULE_FIELD_LABEL[name]}: ${value}${active ? '▌' : ''}`, active)
+        })
+        add(TIMING_HINT, 'faint')
+        hint('↑↓ cambia de campo · Enter guarda · Esc cancela')
+        return { body, focus, footer }
       }
+      if (panel.schedules === undefined) return { body: [{ text: 'Cargando las programaciones…', tone: 'muted' }], focus, footer }
+      if (panel.scheduleLimit !== undefined) hint(`Entregas a una sesión nueva: al menos cada ${panel.scheduleLimit} s.`)
+      if (panel.schedules.length === 0) add('No hay tareas programadas. Pulsa n para crear una.', 'muted')
       panel.schedules.forEach((item, index) => {
-        row(`${index === cursor ? '›' : ' '} ${item.title} · ${item.status}`, index === cursor)
+        row(`${index === cursor ? '›' : ' '} ${item.title} · ${statusLabelOf(item)}`, index === cursor)
+        add(`    ${item.timing}`, 'muted')
+        if (index === cursor && panel.scheduleHistory?.id === item.id) {
+          if (panel.scheduleHistory.records.length === 0) add('    Sin entregas guardadas.', 'muted')
+          for (const record of panel.scheduleHistory.records) add(`    ${recordLine(record)}`, 'muted')
+        }
       })
-      hint('Solo lectura: crear y editar tareas llega en una fase posterior.')
+      hint('n nueva · Enter/e editar · p pausar o reanudar · r ejecutar ahora · h entregas · x eliminar (dos veces) · c quitar terminadas (dos veces)')
       return { body, focus, footer }
     }
     case 'skills': {

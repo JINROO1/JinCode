@@ -8,7 +8,6 @@ import {
   normalizeGoal,
   normalizePresets,
   normalizeQueue,
-  normalizeSchedule,
   normalizeSettings,
   normalizeSkills,
 } from '../src/app/panel-client.ts'
@@ -69,12 +68,6 @@ test('a goal needs an id and a revision; a null answer means no goal', () => {
   }), { id: 'goal-1', revision: 2, objective: 'probar', phase: 'paused', roundsStarted: 3, maxGoalRounds: 256 })
 })
 
-test('schedule titles fall back to the id and missing statuses to unknown', () => {
-  const rows = normalizeSchedule({ items: [{ id: 's1', title: '', status: 'active' }, { id: 's2' }], shown: 2, total: 2 })
-  assert.deepEqual(rows, [{ id: 's1', title: 's1', status: 'active' }, { id: 's2', title: 's2', status: 'unknown' }])
-  assert.deepEqual(normalizeSchedule({ items: [] }), [])
-})
-
 test('skills keep their descriptions, which may be empty', () => {
   assert.deepEqual(normalizeSkills({ skills: [{ name: 'pdf', path: '/x', description: 'Lee PDF' }, { name: 'raw' }] }), [
     { name: 'pdf', description: 'Lee PDF' },
@@ -102,7 +95,13 @@ const replies: Record<string, unknown> = {
   'goals/resume': {},
   'goals/complete': {},
   'goals/clear': {},
-  'schedule/list': { items: [{ id: 's1', title: 'Diario', status: 'active' }], shown: 1, total: 1 },
+  'schedule/catalog': [{ id: 's1', kind: 'every', title: 'Diario', prompt: 'p', everySeconds: 3600, scheduledAt: '2026-11-20T10:00:00.000Z', target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T10:00:00.000Z', updatedAt: '2026-11-19T10:00:00.000Z' }],
+  'schedule/deliveryLimits': { newSessionIntervalSeconds: 60 },
+  'schedule/create': { id: 's2', kind: 'every', title: 'Nueva', prompt: 'p', everySeconds: 60, scheduledAt: '2026-11-20T10:00:00.000Z', target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T10:00:00.000Z', updatedAt: '2026-11-19T10:00:00.000Z' },
+  'schedule/edit': { id: 's1', code: 'schedule_conflict' },
+  'schedule/run': {},
+  'schedule/history': { id: 's1', records: [{ scheduledAt: '2026-11-19T10:00:00.000Z', deliveredAt: '2026-11-19T10:00:01.000Z', messageId: 'm', targetSessionId: 's-1', prompt: 'p' }], earlierRecordsUnavailable: false, earlierRecordsPruned: false, retention: { days: 30, records: 200 } },
+  'schedule/deleteInactive': { deleted: 2 },
   'skills/list': { skills: [{ name: 'pdf', description: 'Lee PDF' }] },
   'session/updateQueue': {},
 }
@@ -194,10 +193,32 @@ test('goal reads, creation and transitions pass the Session and the revision', a
   assert.deepEqual(last().args, { agentId: 's-1', ref: { id: 'goal-1', revision: 4 } }, 'clear needs the Session too')
 })
 
-test('schedules and skills are read with their wrappers', async () => {
+test('schedules read every task from the catalog and the delivery limit from its own endpoint', async () => {
   const schedules = await client.schedules()
-  assert.equal(last().method, 'schedule/list')
-  assert.deepEqual(schedules, [{ id: 's1', title: 'Diario', status: 'active' }])
+  assert.equal(last().method, 'schedule/catalog')
+  assert.equal(schedules[0]?.title, 'Diario')
+  assert.equal(schedules[0]?.timing, 'cada 3600 s')
+  assert.equal(await client.scheduleLimit(), 60)
+  assert.equal(last().method, 'schedule/deliveryLimits')
+})
+
+test('schedule writes send the request the form built, and history asks for a page of 20', async () => {
+  await client.createSchedule({ title: 'Nueva', prompt: 'p' })
+  assert.equal(last().method, 'schedule/create')
+  assert.deepEqual(last().args, { request: { title: 'Nueva', prompt: 'p' } })
+  assert.equal(await client.editSchedule({ id: 's1', action: 'delete' }).then(() => 'sent'), 'sent')
+  assert.equal(last().method, 'schedule/edit')
+  assert.deepEqual(last().args, { request: { id: 's1', action: 'delete' } })
+  await client.runSchedule('s1')
+  assert.deepEqual(last().args, { request: { id: 's1' } })
+  const records = await client.scheduleHistory('s1')
+  assert.deepEqual(last().args, { request: { id: 's1', limit: 20 } })
+  assert.equal(records[0]?.prompt, 'p')
+  assert.equal(await client.clearEndedSchedules(), 2)
+  assert.equal(last().method, 'schedule/deleteInactive')
+})
+
+test('skills are read with their wrapper', async () => {
   const skills = await client.skills('s-1')
   assert.equal(last().method, 'skills/list')
   assert.deepEqual(last().args, { request: { sessionId: 's-1' } })

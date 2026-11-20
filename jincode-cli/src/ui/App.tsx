@@ -12,7 +12,7 @@ import { maskSecret, rule, sessionRows, transcriptLines, type StyledLine, type T
 import { glyph, palette } from './theme.ts'
 import { Panel } from './Panel.tsx'
 import { editField, eraseBack, isErase, type KeyLike } from './keys.ts'
-import { handlePanelKey } from './panel-keys.ts'
+import { handlePanelKey, type ScheduleEditor } from './panel-keys.ts'
 import { TerminalScreen, TERMINAL_CHROME_ROWS } from './TerminalScreen.tsx'
 import { keyBytes } from '../app/terminal-model.ts'
 import { approvalKey, reduceQuestion, startCard, type CardState } from './interaction-keys.ts'
@@ -91,6 +91,8 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
   const [panelCursor, setPanelCursor] = useState(0)
   const [pendingPreset, setPendingPreset] = useState<string | undefined>(undefined)
   const [editingItem, setEditingItem] = useState<string | undefined>(undefined)
+  const [scheduleEditor, setScheduleEditor] = useState<ScheduleEditor | undefined>(undefined)
+  const [armed, setArmed] = useState<string | undefined>(undefined)
   const [effortIndex, setEffortIndex] = useState(0)
   const [card, setCard] = useState<{ key: string; state: CardState } | undefined>(undefined)
   const runningNow = state.transcript.running
@@ -196,9 +198,11 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
         controller.cancelTerminalChoice()
         return
       }
-      if (overlay === 'panel' && (editingItem !== undefined || pendingPreset !== undefined)) {
+      if (overlay === 'panel' && (editingItem !== undefined || pendingPreset !== undefined || scheduleEditor !== undefined || armed !== undefined)) {
         setEditingItem(undefined)
         setPendingPreset(undefined)
+        setScheduleEditor(undefined)
+        setArmed(undefined)
         setField(emptyBuffer())
         return
       }
@@ -224,6 +228,8 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
       setPanelCursor(0)
       setPendingPreset(undefined)
       setEditingItem(undefined)
+      setScheduleEditor(undefined)
+      setArmed(undefined)
       setField(emptyBuffer())
       void controller.openPanel('queue')
       return
@@ -312,6 +318,10 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
         setPendingPreset,
         editingItem,
         setEditingItem,
+        scheduleEditor,
+        setScheduleEditor,
+        armed,
+        setArmed,
       })
       return
     }
@@ -423,6 +433,8 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     panelCursor,
     pendingPreset,
     editingItem,
+    scheduleEditor,
+    armed,
     effortIndex,
     elsewhere,
     interactive: cardLines !== undefined,
@@ -497,6 +509,8 @@ interface MainArgs {
   panelCursor: number
   pendingPreset: string | undefined
   editingItem: string | undefined
+  scheduleEditor: ScheduleEditor | undefined
+  armed: string | undefined
   effortIndex: number
   /** Pending questions or approvals of other Sessions. */
   elsewhere: number
@@ -521,7 +535,7 @@ function renderOverlayOrConversation(args: MainArgs): React.ReactElement {
       case 'attach': return attachOverlay(inner)
       case 'search': return searchOverlay(inner)
       case 'help': return helpOverlay(inner.width)
-      case 'panel': return <Panel state={state} width={inner.width} height={inner.height} cursor={inner.panelCursor} field={inner.field} editing={inner.editingItem} pendingPreset={inner.pendingPreset} />
+      case 'panel': return <Panel state={state} width={inner.width} height={inner.height} cursor={inner.panelCursor} field={inner.field} editing={inner.editingItem} pendingPreset={inner.pendingPreset} schedule={inner.scheduleEditor} armed={inner.armed} />
       default: return conversation(inner)
     }
   })()
