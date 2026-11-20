@@ -7,18 +7,20 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import type { AppState, PanelSection } from '../app/controller.ts'
-import { PANEL_SECTIONS } from '../app/controller.ts'
+import { PANEL_SECTIONS, groupableSessions } from '../app/controller.ts'
 import { packHints, wrapText } from './layout.ts'
 import { type Buffer, textOf } from './composer.ts'
 import { type StyledLine, type Tone } from './format.ts'
 import { palette } from './theme.ts'
 import { fieldSummary, settingsFields } from '../app/settings-model.ts'
+import { groupRows } from '../app/workspace-model.ts'
 
 /** Human labels for the section tabs. */
 export const SECTION_LABEL: Record<PanelSection, string> = {
   queue: 'Cola',
   permissions: 'Permisos',
   settings: 'Ajustes',
+  workspaces: 'Espacios',
   goals: 'Metas',
   schedule: 'Programaciones',
   skills: 'Habilidades',
@@ -68,6 +70,7 @@ export function panelRowCount(state: AppState): number {
     case 'queue': return panel.queue?.length ?? 0
     case 'permissions': return panel.presets?.options.length ?? 0
     case 'settings': return panel.settings === undefined ? 0 : settingsFields(panel.settings).length
+    case 'workspaces': return panel.workspaces === undefined ? 0 : groupRows(panel.workspaces, groupableSessions(state.sessions)).length
     case 'schedule': return panel.schedules?.length ?? 0
     case 'skills': return panel.skills?.length ?? 0
     case 'goals': return 0
@@ -234,6 +237,37 @@ export function sectionView(props: PanelProps): SectionView {
       } else if (selected !== undefined) {
         const replaceable = panel.settings.find(entry => entry.ns === selected.ns)
         hint(`Enter editar · u quitar el valor propio (✎) · ${replaceable?.secrets.length === 0 ? 'j editar la sección completa' : 'la sección tiene secretos: no se edita entera'}`)
+      }
+      return { body, focus, footer }
+    }
+    case 'workspaces': {
+      if (panel.workspaces === undefined) return { body: [{ text: 'Cargando los espacios…', tone: 'muted' }], focus, footer }
+      const rows = groupRows(panel.workspaces, groupableSessions(state.sessions))
+      rows.forEach((item, index) => {
+        const active = index === cursor
+        const pointer = active ? '›' : ' '
+        if (item.kind === 'workspace') row(`${pointer} ▣ ${item.title} (${item.count}) · ${item.path}`, active)
+        else if (item.kind === 'none') add('Sin espacio', 'accent', { bold: true })
+        else if (item.kind === 'archived') add('Archivadas', 'accent', { bold: true })
+        else {
+          const tags = [item.pinned ? 'fijada' : undefined, item.archived ? 'archivada' : undefined, item.running ? 'en curso' : undefined].filter(tag => tag !== undefined)
+          row(`${pointer}   ${item.title}${tags.length > 0 ? ` [${tags.join(' · ')}]` : ''}`, active)
+        }
+      })
+      const selected = rows[cursor]
+      if (editing === 'create') {
+        notice('Ruta de la carpeta · Enter crea · vacío = espacio predeterminado · Esc cancela', 'accent')
+        notice(`${textOf(field)}▌`, 'text')
+      } else if (editing?.startsWith('rename:') === true) {
+        notice('Nuevo título · Enter guarda · Esc cancela', 'accent')
+        notice(`${textOf(field)}▌`, 'text')
+      } else if (selected?.kind === 'workspace') {
+        if (pendingPreset === `delete:${selected.workspaceId}`) notice('x otra vez quita el espacio (sus archivos y sesiones se conservan) · Esc cancela', 'warning')
+        else hint('n crear · r renombrar · x quitar (dos veces) · [ ] mover')
+      } else if (selected?.kind === 'session') {
+        hint('p fijar/desfijar · a archivar/restaurar · [ ] mover dentro de su espacio · n crear espacio')
+      } else {
+        hint('n crear espacio · ↑↓ elegir una fila')
       }
       return { body, focus, footer }
     }

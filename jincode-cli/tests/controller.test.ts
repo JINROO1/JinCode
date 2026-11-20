@@ -15,6 +15,11 @@ const state = {
   sessions: [{ sessionId: 's-1', updatedAt: 1000, running: false, blank: false, cwd: '/tmp', projections: { values: { title: 'Primera', modelSelection: { next: { provider: 'jincode', model: 'gpt-4o-mini' } }, permissions: { currentValue: 'danger-full-access' } } } }],
   queue: [] as Array<{ id: string; placement: string; content: unknown }>,
   goal: null as null | { id: string; revision: number; objective: string; phase: string; roundsStarted: number; maxGoalRounds: number },
+  workspaces: [{ workspaceId: 'ws-a', path: '/tmp/ws-a', title: 'Alfa', sessionIds: ['s-1'], createdAt: 'x', updatedAt: 'x' }] as Array<Record<string, unknown>>,
+  archivedSessionIds: [] as string[],
+  pinnedSessionIds: [] as string[],
+  defaultInits: 0,
+  followers: new Map<string, (value: unknown) => void>(),
   settings: { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' } as Record<string, unknown>, user: { maxSteps: 40 } as Record<string, unknown> | undefined },
 }
 
@@ -54,6 +59,22 @@ function respond(method: string, args: any): unknown {
     case 'permissionPresets/set':
       state.sessions[0] = { ...state.sessions[0]!, projections: { values: { ...state.sessions[0]!.projections.values, permissions: { currentValue: args.preset } } } } as any
       return { currentValue: args.preset }
+    case 'workspace/create': {
+      const existing = state.workspaces.find(item => item.path === args.path)
+      if (existing !== undefined) return { workspace: existing, created: false }
+      const created = { workspaceId: `ws-${state.workspaces.length + 1}`, path: args.path, title: String(args.path).split('/').pop(), sessionIds: [], createdAt: 'x', updatedAt: 'x' }
+      state.workspaces.push(created)
+      return { workspace: created, created: true }
+    }
+    case 'workspace/initializeDefault': state.defaultInits += 1; return null
+    case 'workspace/rename': return { workspace: { ...state.workspaces.find(item => item.workspaceId === args.workspaceId), title: args.title } }
+    case 'workspace/delete': state.workspaces = state.workspaces.filter(item => item.workspaceId !== args.workspaceId); return { deleted: true }
+    case 'workspace/insertBefore': return { workspaceIds: state.workspaces.map(item => item.workspaceId) }
+    case 'workspace/insertSessionBefore': return { workspace: state.workspaces[0] }
+    case 'workspace/pinSession': state.pinnedSessionIds = [...state.pinnedSessionIds, args.sessionId]; return { pinnedSessionIds: state.pinnedSessionIds }
+    case 'workspace/unpinSession': state.pinnedSessionIds = state.pinnedSessionIds.filter(id => id !== args.sessionId); return { pinnedSessionIds: state.pinnedSessionIds }
+    case 'workspace/archiveSession': state.archivedSessionIds = [...state.archivedSessionIds, args.sessionId]; return { archivedSessionIds: state.archivedSessionIds }
+    case 'workspace/unarchiveSession': state.archivedSessionIds = state.archivedSessionIds.filter(id => id !== args.sessionId); return { archivedSessionIds: state.archivedSessionIds }
     case 'settings/describe': return { writable: state.settings.writable, namespaces: [{ ns: 'agent', revision: state.settings.revision, applies: 'next-turn', value: state.settings.value, user: state.settings.user, secrets: [] }] }
     case 'settings/mutate': {
       if (args.expectedRevision !== state.settings.revision) throw new Error('settings revision conflict: the entry changed')
@@ -111,6 +132,12 @@ before(async () => {
     wss.handleUpgrade(request, socket, head, ws => {
       ws.on('message', data => {
         const frame = JSON.parse(data.toString())
+        if (frame.type === 'open' && frame.endpoint === 'workspace/follow') {
+          const send = (value: unknown): void => { ws.send(JSON.stringify({ type: 'item', streamId: frame.streamId, value })) }
+          state.followers.set(frame.streamId, send)
+          send({ type: 'baseline', value: { items: state.workspaces, archivedSessionIds: state.archivedSessionIds, pinnedSessionIds: state.pinnedSessionIds } })
+          return
+        }
         if (frame.type === 'open') ws.send(JSON.stringify({ type: 'item', streamId: frame.streamId, value: { type: 'snapshot', cursor: 0, hasMore: false, records: [] } }))
       })
     })
@@ -388,6 +415,74 @@ test('settings: a read-only profile sends nothing and says so; a replace is refu
     assert.match(app.snapshot().panel.note ?? '', /solo lectura/)
   } finally {
     state.settings = { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' }, user: { maxSteps: 40 } }
+    app.dispose()
+  }
+})
+
+const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 60))
+
+test('workspaces: the baseline from the stream fills the section, and later frames update it', async () => {
+  state.workspaces = [{ workspaceId: 'ws-a', path: '/tmp/ws-a', title: 'Alfa', sessionIds: ['s-1'], createdAt: 'x', updatedAt: 'x' }]
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await settle()
+    assert.deepEqual(app.snapshot().panel.workspaces?.items.map(item => item.title), ['Alfa'])
+    for (const send of state.followers.values()) send({ type: 'upsert', workspace: { ...state.workspaces[0], title: 'Alfa 2' } })
+    await settle()
+    assert.deepEqual(app.snapshot().panel.workspaces?.items.map(item => item.title), ['Alfa 2'])
+    for (const send of state.followers.values()) send({ type: 'pinned', pinnedSessionIds: ['s-1'] })
+    await settle()
+    assert.deepEqual(app.snapshot().panel.workspaces?.pinnedSessionIds, ['s-1'])
+  } finally {
+    state.workspaces = [{ workspaceId: 'ws-a', path: '/tmp/ws-a', title: 'Alfa', sessionIds: ['s-1'], createdAt: 'x', updatedAt: 'x' }]
+    app.dispose()
+  }
+})
+
+test('workspaces: create with a path, or the default one when the path is blank; blank titles are not sent', async () => {
+  state.workspaces = []
+  const before = state.defaultInits
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.workspaceAction({ kind: 'create', path: '  /tmp/ws-b  ' })
+    assert.deepEqual(state.calls.findLast(call => call.method === 'workspace/create')?.args.request, { path: '/tmp/ws-b' })
+    await app.workspaceAction({ kind: 'create', path: '   ' })
+    assert.equal(state.defaultInits, before + 1, 'a blank path initializes the default Workspace')
+    const renames = state.calls.filter(call => call.method === 'workspace/rename').length
+    await app.workspaceAction({ kind: 'rename', workspaceId: 'ws-1', title: '   ' })
+    assert.equal(state.calls.filter(call => call.method === 'workspace/rename').length, renames, 'a blank title is not sent')
+    assert.match(app.snapshot().panel.note ?? '', /vacío/)
+  } finally {
+    state.workspaces = [{ workspaceId: 'ws-a', path: '/tmp/ws-a', title: 'Alfa', sessionIds: ['s-1'], createdAt: 'x', updatedAt: 'x' }]
+    app.dispose()
+  }
+})
+
+test('workspaces: pin, archive, move; archiving a running Session is refused before any call', async () => {
+  state.workspaces = [
+    { workspaceId: 'ws-a', path: '/tmp/ws-a', title: 'Alfa', sessionIds: ['s-1'], createdAt: 'x', updatedAt: 'x' },
+    { workspaceId: 'ws-b', path: '/tmp/ws-b', title: 'Beta', sessionIds: [], createdAt: 'x', updatedAt: 'x' },
+  ]
+  state.sessions[0] = { ...state.sessions[0]!, running: true } as any
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await settle()
+    await app.workspaceAction({ kind: 'pin', sessionId: 's-1', pinned: true })
+    assert.deepEqual(state.calls.findLast(call => call.method === 'workspace/pinSession')?.args.request, { sessionId: 's-1' })
+    await app.workspaceAction({ kind: 'moveWorkspace', workspaceId: 'ws-a', direction: 1 })
+    assert.ok(state.calls.some(call => call.method === 'workspace/insertBefore' && call.args.request.workspaceId === 'ws-a'))
+    const archives = state.calls.filter(call => call.method === 'workspace/archiveSession').length
+    await app.workspaceAction({ kind: 'archive', sessionId: 's-1', archived: true })
+    assert.equal(state.calls.filter(call => call.method === 'workspace/archiveSession').length, archives, 'a running Session is not archived')
+    assert.match(app.snapshot().panel.note ?? '', /turno en curso/)
+  } finally {
+    state.sessions[0] = { ...state.sessions[0]!, running: false } as any
+    state.workspaces = [{ workspaceId: 'ws-a', path: '/tmp/ws-a', title: 'Alfa', sessionIds: ['s-1'], createdAt: 'x', updatedAt: 'x' }]
+    state.pinnedSessionIds = []
+    state.archivedSessionIds = []
     app.dispose()
   }
 })

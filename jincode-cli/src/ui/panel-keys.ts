@@ -5,7 +5,8 @@
 import { emptyBuffer, bufferOf, textOf, type Buffer } from './composer.ts'
 import { editField, type KeyLike } from './keys.ts'
 import { panelRowCount, panelSelection, CONFIRMED_PRESETS } from './Panel.tsx'
-import { PANEL_SECTIONS, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
+import { PANEL_SECTIONS, groupableSessions, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
+import { groupRows } from '../app/workspace-model.ts'
 import {
   canReplaceSection,
   fieldEditKey,
@@ -178,6 +179,50 @@ export function handlePanelKey(keys: PanelKeys): void {
       }
       setEditingItem(fieldEditKey(selected.ns, selected.key))
       setField(bufferOf(selected.secret ? '' : fieldText(selected.value)))
+    }
+    return
+  }
+
+  if (section === 'workspaces') {
+    const view = state.panel.workspaces
+    const rows = view === undefined ? [] : groupRows(view, groupableSessions(state.sessions))
+    if (editingItem !== undefined) {
+      if (!key.return) {
+        setField(editField(field, input, key))
+        return
+      }
+      const text = textOf(field)
+      setEditingItem(undefined)
+      setField(emptyBuffer())
+      if (editingItem === 'create') void controller.workspaceAction({ kind: 'create', path: text })
+      else if (editingItem.startsWith('rename:')) void controller.workspaceAction({ kind: 'rename', workspaceId: editingItem.slice('rename:'.length), title: text })
+      return
+    }
+    if (input === 'n') {
+      setEditingItem('create')
+      setField(emptyBuffer())
+      return
+    }
+    const selected = rows[cursor]
+    if (selected?.kind === 'workspace') {
+      const confirm = `delete:${selected.workspaceId}`
+      if (input === 'r') {
+        setEditingItem(`rename:${selected.workspaceId}`)
+        setField(bufferOf(selected.title))
+      } else if (input === 'x') {
+        if (pendingPreset === confirm) {
+          setPendingPreset(undefined)
+          void controller.workspaceAction({ kind: 'delete', workspaceId: selected.workspaceId })
+        } else setPendingPreset(confirm)
+      } else if (input === '[' || input === ']') {
+        void controller.workspaceAction({ kind: 'moveWorkspace', workspaceId: selected.workspaceId, direction: input === '[' ? -1 : 1 })
+      }
+      return
+    }
+    if (selected?.kind === 'session') {
+      if (input === 'p') void controller.workspaceAction({ kind: 'pin', sessionId: selected.sessionId, pinned: !selected.pinned })
+      else if (input === 'a') void controller.workspaceAction({ kind: 'archive', sessionId: selected.sessionId, archived: !selected.archived })
+      else if (input === '[' || input === ']') void controller.workspaceAction({ kind: 'moveSession', index: cursor, direction: input === '[' ? -1 : 1 })
     }
     return
   }

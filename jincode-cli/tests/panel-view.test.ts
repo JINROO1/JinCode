@@ -16,6 +16,7 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     queue: undefined,
     presets: undefined,
     settings: undefined,
+    workspaces: undefined,
     goal: undefined,
     schedules: undefined,
     skills: undefined,
@@ -399,4 +400,37 @@ test('settings: j edits the whole section as JSON, and a section with secrets is
   secretive.press('j')
   assert.equal(secretive.store.editing, undefined)
   assert.ok(calls.some(call => call.startsWith('notePanel') && call.includes('secretos')))
+})
+
+test('workspaces: n creates (blank path = default); x needs a second press; p and a act on the Session row', () => {
+  const view = { items: [{ workspaceId: 'ws-a', path: '/tmp/a', title: 'Alfa', sessionIds: ['s-1'] }], archivedSessionIds: [], pinnedSessionIds: [] }
+  const { controller, calls } = fakeController()
+  const state = stateWith({ section: 'workspaces', workspaces: view as never })
+  const store = { field: emptyBuffer(), editing: undefined as string | undefined, cursor: 0, pending: undefined as string | undefined }
+  const press = (input: string, key: PanelKeys['key'] = {}): void => {
+    handlePanelKey({
+      input, key, state, controller,
+      field: store.field, setField: value => { store.field = value },
+      cursor: store.cursor, setCursor: value => { store.cursor = typeof value === 'function' ? value(store.cursor) : value },
+      pendingPreset: store.pending, setPendingPreset: value => { store.pending = value },
+      editingItem: store.editing, setEditingItem: value => { store.editing = value },
+    })
+  }
+  press('n')
+  assert.equal(store.editing, 'create')
+  press('', { return: true })
+  assert.ok(calls.some(call => call === 'workspaceAction {"kind":"create","path":""}'), 'a blank path asks for the default Workspace')
+
+  store.cursor = 0
+  press('x')
+  assert.equal(store.pending, 'delete:ws-a', 'the first x only asks')
+  assert.equal(calls.some(call => call.startsWith('workspaceAction {"kind":"delete"')), false)
+  press('x')
+  assert.ok(calls.some(call => call === 'workspaceAction {"kind":"delete","workspaceId":"ws-a"}'))
+
+  store.cursor = 1
+  press('p')
+  assert.ok(calls.some(call => call === 'workspaceAction {"kind":"pin","sessionId":"s-1","pinned":true}'))
+  press('a')
+  assert.ok(calls.some(call => call === 'workspaceAction {"kind":"archive","sessionId":"s-1","archived":true}'))
 })

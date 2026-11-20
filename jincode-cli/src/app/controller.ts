@@ -29,6 +29,7 @@ import type {
 } from './interaction-rules.ts'
 import { emptyTranscript, type Transcript } from '../transcript/reducer.ts'
 import { canReplaceSection } from './settings-model.ts'
+import { applyWorkspaceFrame, emptyWorkspaces, groupRows, sessionMove, workspaceMove, type GroupableSession, type WorkspaceView } from './workspace-model.ts'
 import {
   PanelClient,
   type GoalView,
@@ -46,14 +47,24 @@ export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'sear
 /** How often the Session list is read again while a turn runs, to find continued questions. */
 const POLL_MS = 2500
 
-/** Sections of the panel, in the order Tab cycles through them. */
+/** One change in the Workspace section. */
+export type WorkspaceAction =
+  | { readonly kind: 'create'; readonly path: string }
+  | { readonly kind: 'rename'; readonly workspaceId: string; readonly title: string }
+  | { readonly kind: 'delete'; readonly workspaceId: string }
+  | { readonly kind: 'moveWorkspace'; readonly workspaceId: string; readonly direction: -1 | 1 }
+  | { readonly kind: 'pin'; readonly sessionId: string; readonly pinned: boolean }
+  | { readonly kind: 'archive'; readonly sessionId: string; readonly archived: boolean }
+  | { readonly kind: 'moveSession'; readonly index: number; readonly direction: -1 | 1 }
+
 /** One change to a namespace from the settings section. */
 export type SettingAction =
   | { readonly kind: 'set'; readonly key: string; readonly value: unknown }
   | { readonly kind: 'unset'; readonly key: string }
   | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
 
-export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'goals', 'schedule', 'skills'] as const
+/** Sections of the panel, in the order Tab cycles through them. */
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'goals', 'schedule', 'skills'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
@@ -93,6 +104,8 @@ export interface PanelState {
   readonly queue: readonly QueueRow[] | undefined
   readonly presets: PresetView | undefined
   readonly settings: readonly SettingsRow[] | undefined
+  /** The Workspace registry, pins and archives; undefined until the baseline arrives. */
+  readonly workspaces: WorkspaceView | undefined
   /** `null` when the Session has no goal; undefined before the first read. */
   readonly goal: GoalView | null | undefined
   readonly schedules: readonly ScheduleRow[] | undefined
@@ -135,6 +148,15 @@ export function titleOf(session: SessionSummary | undefined): string {
   return session.blank ? 'Sesión vacía' : 'Sesión sin título'
 }
 
+/**
+ * The Sessions as the Workspace grouping reads them, with the titles the sidebar shows.
+ * @param sessions - the Sessions the controller knows.
+ * @returns one entry per Session.
+ */
+export function groupableSessions(sessions: readonly SessionSummary[]): GroupableSession[] {
+  return sessions.map(session => ({ sessionId: session.sessionId, title: titleOf(session), running: session.running }))
+}
+
 /** Controller bound to one server connection. */
 export class AppController {
   private readonly sessions: SessionClient
@@ -155,7 +177,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, goal: undefined, schedules: undefined, skills: undefined, note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, goal: undefined, schedules: undefined, skills: undefined, note: undefined },
     interactions: [],
     attachments: [],
     overlay: 'none',
@@ -163,11 +185,13 @@ export class AppController {
     error: undefined,
   }
 
+  private workspaceFollow: { stop: () => void } | undefined
+
   constructor(private readonly connection: RemoteConnection) {
     // The Host accepts one multiplexed socket per connection, so every stream shares this one.
     const mux = new RemoteMux(connection)
     this.sessions = new SessionClient(connection, mux)
-    this.panelClient = new PanelClient(connection)
+    this.panelClient = new PanelClient(connection, mux)
     this.interactionClient = new InteractionClient(connection, {
       onChange: pending => this.patch({ interactions: pending }),
       onError: error => this.fail(error),
@@ -197,6 +221,10 @@ export class AppController {
    */
   async start(): Promise<void> {
     this.interactionClient.start()
+    this.workspaceFollow ??= this.panelClient.followWorkspaces(
+      frame => this.patchPanel({ workspaces: applyWorkspaceFrame(this.state.panel.workspaces ?? emptyWorkspaces(), frame) }),
+      error => this.fail(error),
+    )
     await Promise.all([this.refreshSessions(), this.refreshCatalog(), this.refreshProviders()])
     const first = this.state.sessions[0]
     if (first !== undefined) await this.open(first.sessionId)
@@ -536,6 +564,9 @@ export class AppController {
           this.patchPanel({ settings: await this.panelClient.settings() })
           return
         }
+        case 'workspaces':
+          // The stream started by `start` keeps this section current.
+          return
         case 'goals': {
           if (sessionId === undefined) return
           this.patchPanel({ goal: (await this.panelClient.goal(sessionId)) ?? null })
@@ -589,6 +620,73 @@ export class AppController {
    */
   notePanel(note: string): void {
     this.patchPanel({ note })
+  }
+
+  /**
+   * Run one Workspace action. Pins, archives and moves are shown when the Host
+   * streams them back, so the panel only reports what it asked for.
+   * @param action - the change to apply.
+   */
+  async workspaceAction(action: WorkspaceAction): Promise<void> {
+    const view = this.state.panel.workspaces ?? emptyWorkspaces()
+    const sessions = this.state.sessions
+    await this.attempt(async () => {
+      switch (action.kind) {
+        case 'create': {
+          const path = action.path.trim()
+          if (path.length === 0) {
+            await this.panelClient.initializeDefaultWorkspace()
+            this.patchPanel({ note: 'espacio predeterminado listo' })
+            return
+          }
+          const created = await this.panelClient.createWorkspace(path)
+          this.patchPanel({ note: created === undefined ? 'espacio creado' : `espacio «${created.title}» listo` })
+          return
+        }
+        case 'rename': {
+          const title = action.title.trim()
+          if (title.length === 0) {
+            this.patchPanel({ note: 'el título no puede estar vacío' })
+            return
+          }
+          await this.panelClient.renameWorkspace(action.workspaceId, title)
+          this.patchPanel({ note: 'espacio renombrado' })
+          return
+        }
+        case 'delete':
+          await this.panelClient.deleteWorkspace(action.workspaceId)
+          this.patchPanel({ note: 'espacio quitado; sus archivos y sesiones se conservan' })
+          return
+        case 'moveWorkspace': {
+          const move = workspaceMove(view, action.workspaceId, action.direction)
+          if (move === undefined) return
+          await this.panelClient.moveWorkspace(action.workspaceId, move.beforeWorkspaceId)
+          return
+        }
+        case 'pin':
+          await this.panelClient.setPinned(action.sessionId, action.pinned)
+          this.patchPanel({ note: action.pinned ? 'sesión fijada' : 'sesión desfijada' })
+          return
+        case 'archive': {
+          const session = sessions.find(item => item.sessionId === action.sessionId)
+          if (action.archived && session?.running === true) {
+            this.patchPanel({ note: 'la sesión tiene un turno en curso: espera a que termine o cancélalo' })
+            return
+          }
+          await this.panelClient.setArchived(action.sessionId, action.archived)
+          this.patchPanel({ note: action.archived ? 'sesión archivada' : 'sesión restaurada' })
+          return
+        }
+        case 'moveSession': {
+          const rows = groupRows(view, groupableSessions(sessions))
+          const move = sessionMove(rows, action.index, action.direction)
+          const row = rows[action.index]
+          if (move === undefined || row?.kind !== 'session') return
+          await this.panelClient.moveSession(move.workspaceId, row.sessionId, move.beforeSessionId)
+          return
+        }
+      }
+    })
   }
 
   /**
@@ -677,6 +775,7 @@ export class AppController {
   /** Stop following, close the sockets and drop listeners. */
   dispose(): void {
     this.followPolling(false)
+    this.workspaceFollow?.stop()
     this.follow?.stop()
     this.interactionClient.stop()
     this.sessions.close()

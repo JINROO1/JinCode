@@ -3,7 +3,8 @@
  * permission presets, Host settings (read-only), goals, schedules and skills.
  * Every reply is normalized here, so the UI never reads raw wire shapes.
  */
-import { call, type RemoteConnection } from '../wire/remote.ts'
+import { call, type RemoteConnection, type RemoteMux } from '../wire/remote.ts'
+import { normalizeWorkspace, type WorkspaceRow } from './workspace-model.ts'
 
 /** One message waiting for the running turn. */
 export interface QueueRow {
@@ -172,7 +173,111 @@ export function normalizeSkills(value: unknown): SkillRow[] {
 
 /** Thin wrappers over the Remote API, one per panel action. */
 export class PanelClient {
-  constructor(private readonly connection: RemoteConnection) {}
+  /**
+   * @param connection - the Remote connection.
+   * @param mux - the shared stream carrier; needed only for the Workspace stream.
+   */
+  constructor(private readonly connection: RemoteConnection, private readonly mux?: Pick<RemoteMux, 'open'>) {}
+
+  /**
+   * Follow the Workspace state: a baseline, then ordered increments. Frames are
+   * passed on as received; the Workspace model folds them into a view.
+   * @param onFrame - receives each frame.
+   * @param onError - receives a terminal stream failure.
+   * @returns a handle that stops delivery.
+   */
+  followWorkspaces(onFrame: (frame: unknown) => void, onError: (error: unknown) => void): { stop: () => void } {
+    if (this.mux === undefined) return { stop: () => {} }
+    const stream = this.mux.open('workspace/follow', {})
+    let stopped = false
+    void (async () => {
+      try {
+        for await (const frame of stream) {
+          if (stopped) break
+          onFrame(frame)
+        }
+      } catch (error) {
+        if (!stopped) onError(error)
+      }
+    })()
+    return {
+      stop: () => {
+        stopped = true
+        stream.cancel()
+      },
+    }
+  }
+
+  /**
+   * Create a Workspace over a directory. The Host answers with the existing one
+   * when the directory already has a Workspace.
+   * @param path - the directory.
+   * @returns the Workspace.
+   */
+  async createWorkspace(path: string): Promise<WorkspaceRow | undefined> {
+    const value = await call<{ workspace?: unknown }>(this.connection, 'workspace/create', { request: { path } })
+    return normalizeWorkspace(value?.workspace)
+  }
+
+  /** Create or reuse the default Workspace, for the first-use flow. */
+  async initializeDefaultWorkspace(): Promise<void> {
+    await call(this.connection, 'workspace/initializeDefault', {})
+  }
+
+  /**
+   * @param workspaceId - the Workspace.
+   * @param title - the new title; the Host rejects blank or duplicate titles.
+   */
+  async renameWorkspace(workspaceId: string, title: string): Promise<void> {
+    await call(this.connection, 'workspace/rename', { request: { workspaceId, title } })
+  }
+
+  /**
+   * Remove a Workspace registration. Its files and Sessions stay.
+   * @param workspaceId - the Workspace.
+   */
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    await call(this.connection, 'workspace/delete', { request: { workspaceId } })
+  }
+
+  /**
+   * Move a Workspace in the registry order.
+   * @param workspaceId - the Workspace to move.
+   * @param beforeWorkspaceId - insert before this one; undefined moves it last.
+   */
+  async moveWorkspace(workspaceId: string, beforeWorkspaceId: string | undefined): Promise<void> {
+    await call(this.connection, 'workspace/insertBefore', { request: beforeWorkspaceId === undefined ? { workspaceId } : { workspaceId, beforeWorkspaceId } })
+  }
+
+  /**
+   * Move a Session inside a Workspace.
+   * @param workspaceId - the Workspace.
+   * @param sessionId - the Session.
+   * @param beforeSessionId - insert before this one; undefined moves it last.
+   */
+  async moveSession(workspaceId: string, sessionId: string, beforeSessionId: string | undefined): Promise<void> {
+    await call(this.connection, 'workspace/insertSessionBefore', {
+      request: beforeSessionId === undefined ? { workspaceId, sessionId } : { workspaceId, sessionId, beforeSessionId },
+    })
+  }
+
+  /**
+   * Pin or unpin a Session on the Workspace surfaces.
+   * @param sessionId - the Session.
+   * @param pinned - the new state.
+   */
+  async setPinned(sessionId: string, pinned: boolean): Promise<void> {
+    await call(this.connection, pinned ? 'workspace/pinSession' : 'workspace/unpinSession', { request: { sessionId } })
+  }
+
+  /**
+   * Hide a Session from the Workspace grouping, or restore it.
+   * @param sessionId - the Session.
+   * @param archived - the new state. Archiving a running Session is refused by the Host.
+   */
+  async setArchived(sessionId: string, archived: boolean): Promise<void> {
+    await call(this.connection, archived ? 'workspace/archiveSession' : 'workspace/unarchiveSession', { request: { sessionId } })
+  }
 
   /** @returns the queue of a Session. */
   async queue(sessionId: string): Promise<QueueRow[]> {
