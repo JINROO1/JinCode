@@ -20,12 +20,23 @@ const state = {
   pinnedSessionIds: [] as string[],
   defaultInits: 0,
   followers: new Map<string, (value: unknown) => void>(),
+  terminals: [] as Array<Record<string, any>>,
+  terminalWatchers: new Map<string, (value: unknown) => void>(),
+  terminalAttachments: new Map<string, { id: string; out: number; send: (value: unknown) => void; end: () => void }>(),
+  terminalWrites: [] as Array<Record<string, any>>,
+  terminalCancelled: [] as string[],
+  terminalWindow: { maxBytes: 200, frameOverheadBytes: 10 } as { maxBytes: number; frameOverheadBytes: number },
+  terminalWritable: true,
   settings: { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' } as Record<string, unknown>, user: { maxSteps: 40 } as Record<string, unknown> | undefined },
 }
 
 let server: Server
 let wss: WebSocketServer
 let connection: RemoteConnection
+
+function broadcastTerminals(): void {
+  for (const send of state.terminalWatchers.values()) send(state.terminals)
+}
 
 function respond(method: string, args: any): unknown {
   switch (method) {
@@ -80,6 +91,22 @@ function respond(method: string, args: any): unknown {
       return { path: args.path, entries: [{ name: 'a.ts', type: 'file', size: 10 }] }
     case 'workspaceFiles/read': return { offset: args.range.offset, lines: 2, eof: args.range.offset > 1, text: 'primera\nsegunda', absolutePath: '/x', version: 'v' }
     case 'workspaceFiles/search': return { matches: [{ path: 'src/a.ts', type: 'file' }] }
+    case 'terminal/shells': return [{ path: '/bin/bash', args: [], name: 'bash' }, { path: '/bin/zsh', args: ['-l'], name: 'zsh' }]
+    case 'terminal/environment': return { cwd: '/home/user/JinCode', maxInputBytes: 64, maxBufferedBytes: 4096, maxCols: 300, maxRows: 100, scrollback: 500 }
+    case 'terminal/list': return state.terminals
+    case 'terminal/create': {
+      state.terminals = [...state.terminals, { id: args.id, title: '', shell: { path: args.shellPath ?? '/bin/bash', args: [], name: args.shellPath === '/bin/zsh' ? 'zsh' : 'bash' }, cwd: '/home/user/JinCode', cols: args.cols, rows: args.rows, state: 'running', exitCode: null, origin: 'user', control: 'user' }]
+      broadcastTerminals()
+      return { id: args.id }
+    }
+    case 'terminal/rename':
+      state.terminals = state.terminals.map(item => (item.id === args.id ? { ...item, title: args.title } : item))
+      broadcastTerminals()
+      return null
+    case 'terminal/close':
+      state.terminals = state.terminals.filter(item => item.id !== args.id)
+      broadcastTerminals()
+      return null
     case 'settings/describe': return { writable: state.settings.writable, namespaces: [{ ns: 'agent', revision: state.settings.revision, applies: 'next-turn', value: state.settings.value, user: state.settings.user, secrets: [] }] }
     case 'settings/mutate': {
       if (args.expectedRevision !== state.settings.revision) throw new Error('settings revision conflict: the entry changed')
@@ -124,7 +151,11 @@ before(async () => {
     const method = url.pathname.slice('/api/'.length)
     state.calls.push({ method, args: body.payload.args })
     let result: { ok: boolean; value?: unknown; error?: { code: string; message: string } }
-    try {
+    // The Host names the Session `agentId` on terminal calls, and rejects anything else.
+    const terminalNeedsAgent = method.startsWith('terminal/') && method !== 'terminal/list' && method !== 'terminal/watch' && method !== 'terminal/retain'
+    if (terminalNeedsAgent && body.payload.args.agentId === undefined) {
+      result = { ok: false, error: { code: 'gateway/arguments-invalid', message: `args fields do not match the descriptor: missing "agentId"` } }
+    } else try {
       result = { ok: true, value: respond(method, body.payload.args.request ?? body.payload.args) }
     } catch (error) {
       result = { ok: false, error: { code: 'test/fake-failed', message: String(error) } }
@@ -141,6 +172,44 @@ before(async () => {
           const send = (value: unknown): void => { ws.send(JSON.stringify({ type: 'item', streamId: frame.streamId, value })) }
           state.followers.set(frame.streamId, send)
           send({ type: 'baseline', value: { items: state.workspaces, archivedSessionIds: state.archivedSessionIds, pinnedSessionIds: state.pinnedSessionIds } })
+          return
+        }
+        const send = (value: unknown): void => { ws.send(JSON.stringify({ type: 'item', streamId: frame.streamId, value })) }
+        if (frame.type === 'open' && frame.endpoint === 'terminal/watch') {
+          state.terminalWatchers.set(frame.streamId, send)
+          send(state.terminals)
+          return
+        }
+        if (frame.type === 'open' && frame.endpoint === 'terminal/retain') {
+          send({ type: 'retained' })
+          return
+        }
+        if (frame.type === 'open' && frame.endpoint === 'terminal/attach') {
+          const id = frame.payload.args.id as string
+          const info = state.terminals.find(item => item.id === id)
+          if (info === undefined) {
+            ws.send(JSON.stringify({ type: 'error', streamId: frame.streamId, error: { code: 'terminal/missing', message: 'terminal not found', details: {} } }))
+            return
+          }
+          const end = (): void => { ws.send(JSON.stringify({ type: 'end', streamId: frame.streamId })) }
+          state.terminalAttachments.set(frame.streamId, { id, out: 4, send, end })
+          send({ type: 'snapshot', sequence: 4, screen: 'PS> ', info, writable: state.terminalWritable, inputWindow: state.terminalWindow })
+          return
+        }
+        if (frame.type === 'item' && state.terminalAttachments.has(frame.streamId)) {
+          const attachment = state.terminalAttachments.get(frame.streamId)!
+          state.terminalWrites.push(frame.value)
+          if (frame.value.type === 'write') {
+            attachment.out += 1
+            attachment.send({ type: 'output', sequence: attachment.out, data: frame.value.data })
+          }
+          attachment.send({ type: 'ack', sequence: frame.value.sequence })
+          return
+        }
+        if (frame.type === 'cancel') {
+          state.terminalCancelled.push(frame.streamId)
+          state.terminalAttachments.delete(frame.streamId)
+          state.terminalWatchers.delete(frame.streamId)
           return
         }
         if (frame.type === 'open') ws.send(JSON.stringify({ type: 'item', streamId: frame.streamId, value: { type: 'snapshot', cursor: 0, hasMore: false, records: [] } }))
@@ -590,3 +659,86 @@ test('the chosen reasoning effort is sent with the model selection', async () =>
     app.dispose()
   }
 })
+
+test('terminals: create, attach, type with acknowledgements, see the echo, detach; the list follows the roster', async () => {
+  state.terminals = []
+  state.terminalWrites = []
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.setSection('terminals')
+    await waitFor(() => app.snapshot().panel.terminals?.items !== undefined)
+    assert.deepEqual(app.snapshot().panel.terminals?.items, [], 'the empty list arrives from the roster')
+    assert.equal(app.snapshot().panel.terminals?.environment?.maxInputBytes, 64)
+    await app.openTerminalChoice()
+    assert.deepEqual(app.snapshot().panel.terminals?.shells?.map(shell => shell.name), ['bash', 'zsh'])
+    await app.startTerminal('/bin/zsh')
+    await waitFor(() => app.snapshot().terminal?.phase === 'connected')
+    const created = app.snapshot().panel.terminals?.items?.[0]
+    assert.equal(created?.shell.name, 'zsh', 'the chosen shell is used')
+    assert.equal(app.snapshot().terminal?.writable, true)
+    assert.equal(app.terminalLines()?.[0]?.map(run => run.text).join('').trimEnd(), 'PS>')
+    app.sendTerminal('ls')
+    app.sendTerminal('\r')
+    await waitFor(() => state.terminalWrites.length === 2 && (app.terminalLines()?.[0]?.map(run => run.text).join('') ?? '').includes('ls'))
+    assert.deepEqual(state.terminalWrites.map(write => [write.type, write.sequence, write.data]), [['write', 1, 'ls'], ['write', 2, '\r']], 'input is sequenced in order')
+    assert.match(app.terminalLines()?.[0]?.map(run => run.text).join('') ?? '', /PS> ls/, 'the echo is drawn on the screen')
+    await app.detachTerminal()
+    assert.equal(app.snapshot().terminal, undefined)
+    assert.equal(state.terminalCancelled.length >= 1, true, 'detaching cancels the attachment on the Host')
+    await app.renameTerminal(created!.id, '  Build  ')
+    await waitFor(() => app.snapshot().panel.terminals?.items?.[0]?.title === 'Build')
+    assert.equal(app.snapshot().panel.terminals?.items?.[0]?.title, 'Build', 'the new title is trimmed and the list follows')
+    await app.renameTerminal(created!.id, '   ')
+    assert.match(app.snapshot().panel.note ?? '', /no puede estar vacío/)
+    await app.closeTerminal(created!.id)
+    await waitFor(() => app.snapshot().panel.terminals?.items?.length === 0)
+    assert.deepEqual(app.snapshot().panel.terminals?.items, [])
+  } finally {
+    app.dispose()
+  }
+})
+
+test('terminals: a read-only view refuses keys; a dropped connection keeps the screen until the person reconnects', async () => {
+  state.terminals = [{ id: 'agent-1', title: 'Pruebas', shell: { path: '/bin/bash', args: [], name: 'bash' }, cwd: '/w', cols: 80, rows: 24, state: 'running', exitCode: null, origin: 'agent', control: 'agent', sandboxMode: 'read-only' }]
+  state.terminalWrites = []
+  state.terminalWritable = false
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.attachTerminal('agent-1')
+    await waitFor(() => app.snapshot().terminal?.phase === 'connected')
+    assert.equal(app.snapshot().terminal?.info?.sandboxMode, 'read-only')
+    assert.equal(app.snapshot().terminal?.writable, false)
+    app.sendTerminal('x')
+    assert.equal(state.terminalWrites.length, 0, 'nothing is sent to a read-only terminal')
+    assert.equal(app.snapshot().terminal?.notice, 'Esta vista es de solo lectura.')
+    await app.detachTerminal()
+
+    state.terminalWritable = true
+    await app.attachTerminal('agent-1')
+    await waitFor(() => app.snapshot().terminal?.writable === true)
+    app.sendTerminal('y')
+    await waitFor(() => state.terminalWrites.length === 1)
+    assert.equal(state.terminalWrites[0]?.data, 'y')
+
+    for (const attachment of state.terminalAttachments.values()) attachment.end()
+    await waitFor(() => app.snapshot().terminal?.phase === 'disconnected')
+    assert.match(app.snapshot().terminal?.notice ?? '', /reconectar/)
+    assert.equal(app.snapshot().terminal?.info?.id, 'agent-1', 'the last screen stays')
+    app.sendTerminal('z')
+    assert.equal(state.terminalWrites.length, 1, 'keys are not sent while disconnected')
+    await app.reconnectTerminal()
+    await waitFor(() => app.snapshot().terminal?.phase === 'connected')
+    assert.equal(app.snapshot().terminal?.notice, undefined)
+  } finally {
+    state.terminalWritable = true
+    await app.detachTerminal()
+    app.dispose()
+  }
+})
+
+async function waitFor(check: () => boolean, ms = 2000): Promise<void> {
+  const until = Date.now() + ms
+  while (!check() && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 10))
+}

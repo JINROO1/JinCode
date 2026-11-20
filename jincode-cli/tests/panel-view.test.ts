@@ -18,6 +18,7 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     settings: undefined,
     workspaces: undefined,
     files: undefined,
+    terminals: undefined,
     goal: undefined,
     schedules: undefined,
     skills: undefined,
@@ -65,6 +66,7 @@ test('every line of every section fits the width it was laid out for', () => {
   const long = 'palabra '.repeat(40) + 'supercalifragilisticoespialidosoxxxxxxxxxxxxxxxxxxxxxxxxxx'
   const sections: Array<Partial<PanelState>> = [
     { section: 'queue', queue: [{ id: 'q', placement: 'queued', text: long }] },
+    { section: 'terminals', terminals: { sessionId: 's-1', items: [{ id: 't', title: long, shell: { path: '/bin/bash', args: [], name: 'bash' }, cwd: long, cols: 80, rows: 24, state: 'failed', exitCode: undefined, error: long, origin: 'agent', control: 'agent', sandboxMode: 'read-only' }], environment: undefined, shells: undefined, choosing: false } },
     { section: 'permissions', presets: { options: ['read-only', 'danger-full-access'], defaultPreset: 'danger-full-access' } },
     { section: 'settings', settings: [{ ns: 'agent', revision: 1, applies: 'next-turn', writable: false, value: { long }, user: undefined, secrets: [] }] },
     { section: 'goals', goal: { id: 'g', revision: 1, objective: long, phase: 'active', roundsStarted: 1, maxGoalRounds: 8 } },
@@ -474,4 +476,41 @@ test('files: Enter opens a folder, Backspace goes up, / searches; in a page, [ ]
   assert.ok(calls.includes('pageFile 1'))
   pagedPress('', { backspace: true })
   assert.ok(calls.includes('closeFileView'))
+})
+
+test('terminals: Enter opens, n chooses a shell, r renames, x closes; the chooser starts with Enter and Esc cancels', () => {
+  const info = { id: 't-1', title: 'Build', shell: { path: '/bin/bash', args: [], name: 'bash' }, cwd: '/w', cols: 80, rows: 24, state: 'running' as const, exitCode: undefined, error: undefined, origin: 'user' as const, control: 'user' as const, sandboxMode: undefined }
+  const shells = [{ path: '/bin/bash', args: [], name: 'bash' }, { path: '/bin/zsh', args: [], name: 'zsh' }]
+  const base = { section: 'terminals' as const, terminals: { sessionId: 's-1', items: [info], environment: undefined, shells: undefined, choosing: false } }
+  const state = stateWith(base, { activeId: 's-1' })
+  const { controller, calls } = fakeController()
+  handlePanelKey(keysFor(state, controller, { key: { return: true } }))
+  assert.ok(calls.includes('attachTerminal "t-1"'), 'Enter attaches the selected terminal')
+  calls.length = 0
+  handlePanelKey(keysFor(state, controller, { input: 'n' }))
+  assert.ok(calls.includes('openTerminalChoice'))
+  calls.length = 0
+  handlePanelKey(keysFor(state, controller, { input: 'x' }))
+  assert.ok(calls.includes('closeTerminal "t-1"'))
+
+  const renaming = keysFor(state, controller, { input: 'r' })
+  handlePanelKey(renaming)
+  assert.equal(renaming.setEditingItem.length, 1)
+  const store = { editing: 'rename' as string | undefined, field: bufferOf('Build') }
+  const typed = (overrides: Partial<PanelKeys>) => keysFor(state, controller, { editingItem: store.editing, field: store.field, setEditingItem: value => { store.editing = value }, setField: value => { store.field = value }, ...overrides })
+  handlePanelKey(typed({ input: '!', key: {} }))
+  assert.equal(textOf(store.field), 'Build!')
+  calls.length = 0
+  handlePanelKey(typed({ key: { return: true } }))
+  assert.ok(calls.includes('renameTerminal "t-1" "Build!"'), 'Enter saves the new name')
+  assert.equal(store.editing, undefined)
+
+  const chooser = stateWith({ ...base, terminals: { ...base.terminals, shells, choosing: true } }, { activeId: 's-1' })
+  calls.length = 0
+  handlePanelKey(keysFor(chooser, controller, { input: 'n' }))
+  assert.equal(calls.length, 0, 'the chooser ignores the keys of the list')
+  const down = keysFor(chooser, controller, { key: { downArrow: true } })
+  handlePanelKey(down)
+  handlePanelKey(keysFor(chooser, controller, { key: { return: true }, cursor: 1 }))
+  assert.ok(calls.includes('startTerminal "/bin/zsh"'), 'Enter starts the shell under the cursor')
 })

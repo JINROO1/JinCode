@@ -119,6 +119,14 @@ export async function call<T = unknown>(
 
 /** One open logical stream on the multiplexed socket. */
 export interface RemoteStream<T = unknown> extends AsyncIterable<T> {
+  /**
+   * Send one uplink item. Items wait until the `open` frame is on the wire, and keep their order.
+   * Ignored once the stream has ended.
+   * @param value - a JSON value the Host validates against the method's uplink codec.
+   */
+  send(value: unknown): void
+  /** Half-close the uplink; the Host's uplink iteration ends. Idempotent. */
+  end(): void
   /** Cancel the stream on the Host and stop delivery. */
   cancel(): void
 }
@@ -151,15 +159,32 @@ export class RemoteMux {
         this.streams.delete(streamId)
       }
     })
-    void this.ensureSocket().then((socket) => {
+    // Uplink frames chain behind the open frame, so the Host always sees open first.
+    let uplink: Promise<WebSocket | undefined> = this.ensureSocket().then((socket) => {
       socket.send(JSON.stringify({ type: 'open', streamId, endpoint, payload: { args } }))
+      return socket
     }).catch((error: unknown) => {
       queue.fail(error instanceof Error ? error : new Error(String(error)))
       this.streams.delete(streamId)
+      return undefined
     })
+    let ended = false
+    const sendUplink = (frame: Record<string, unknown>): void => {
+      if (ended) return
+      uplink = uplink.then((socket) => {
+        if (socket !== undefined && this.streams.has(streamId)) socket.send(JSON.stringify({ streamId, ...frame }))
+        return socket
+      })
+    }
     return {
       [Symbol.asyncIterator]: () => queue[Symbol.asyncIterator](),
+      send: (value) => sendUplink({ type: 'item', value }),
+      end: () => {
+        sendUplink({ type: 'end' })
+        ended = true
+      },
       cancel: () => {
+        ended = true
         this.streams.delete(streamId)
         queue.close()
         this.socket?.send(JSON.stringify({ type: 'cancel', streamId }))

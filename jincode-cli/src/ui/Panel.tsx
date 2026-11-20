@@ -8,13 +8,29 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { AppState, PanelSection } from '../app/controller.ts'
 import { PANEL_SECTIONS, groupableSessions } from '../app/controller.ts'
-import { packHints, wrapText } from './layout.ts'
+import { packHints, truncate, wrapText } from './layout.ts'
 import { type Buffer, textOf } from './composer.ts'
 import { type StyledLine, type Tone } from './format.ts'
 import { palette } from './theme.ts'
 import { fieldSummary, settingsFields } from '../app/settings-model.ts'
 import { groupRows } from '../app/workspace-model.ts'
 import { fileRowsOf, sizeLabel } from '../app/file-model.ts'
+import { stateText, type TerminalInfo } from '../app/terminal-model.ts'
+
+/**
+ * One line that says what a terminal is: its name, shell, state and who opened it.
+ * @param item - the terminal.
+ * @returns the label.
+ */
+export function terminalLine(item: TerminalInfo): string {
+  const name = item.title.length > 0 ? item.title : item.shell.name
+  const state = stateText(item) ?? 'en ejecución'
+  const origin = item.origin === 'agent'
+    ? `agente${item.sandboxMode === undefined ? '' : ` · sandbox ${item.sandboxMode}`}${item.control === 'agent' ? '' : ' · control del usuario'}`
+    : 'usuario'
+  const shell = item.shell.name === name ? '' : ` · ${item.shell.name}`
+  return `${name}${shell} · ${state} · ${origin}`
+}
 
 /** Human labels for the section tabs. */
 export const SECTION_LABEL: Record<PanelSection, string> = {
@@ -23,6 +39,7 @@ export const SECTION_LABEL: Record<PanelSection, string> = {
   settings: 'Ajustes',
   workspaces: 'Espacios',
   files: 'Archivos',
+  terminals: 'Terminal',
   goals: 'Metas',
   schedule: 'Programaciones',
   skills: 'Habilidades',
@@ -74,6 +91,7 @@ export function panelRowCount(state: AppState): number {
     case 'settings': return panel.settings === undefined ? 0 : settingsFields(panel.settings).length
     case 'workspaces': return panel.workspaces === undefined ? 0 : groupRows(panel.workspaces, groupableSessions(state.sessions)).length
     case 'files': return panel.files === undefined || panel.files.page !== undefined ? 0 : fileRowsOf(panel.files).length
+    case 'terminals': return panel.terminals === undefined ? 0 : panel.terminals.choosing ? panel.terminals.shells?.length ?? 0 : panel.terminals.items?.length ?? 0
     case 'schedule': return panel.schedules?.length ?? 0
     case 'skills': return panel.skills?.length ?? 0
     case 'goals': return 0
@@ -136,7 +154,7 @@ export function Panel(props: PanelProps): React.ReactElement {
   const span = bodyWindow(view.body.length, rows, view.focus)
   const visible = view.body.slice(span.start, span.start + rows)
   const indicator: StyledLine[] = scrolls
-    ? [{ text: `▲ ${span.above} arriba · ▼ ${span.below} abajo · ↑↓ mueven el cursor`, tone: 'faint' }]
+    ? [{ text: truncate(`▲ ${span.above} arriba · ▼ ${span.below} abajo · ↑↓ mueven el cursor`, width), tone: 'faint' }]
     : []
   const lines: StyledLine[] = [...head, ...visible, ...indicator, ...note, ...view.footer]
   return (
@@ -272,6 +290,31 @@ export function sectionView(props: PanelProps): SectionView {
       } else {
         hint('n crear espacio · ↑↓ elegir una fila')
       }
+      return { body, focus, footer }
+    }
+    case 'terminals': {
+      if (state.activeId === undefined) return { body: [{ text: 'Abre una sesión para usar su terminal.', tone: 'muted' }], focus, footer }
+      const view = panel.terminals
+      if (view === undefined || view.sessionId !== state.activeId) return { body: [{ text: 'Cargando las terminales…', tone: 'muted' }], focus, footer }
+      if (view.choosing) {
+        add('Elige la shell de la nueva terminal', 'accent', { bold: true })
+        if ((view.shells ?? []).length === 0) add('No hay shells disponibles: se usará la predeterminada.', 'muted')
+        ;(view.shells ?? []).forEach((shell, index) => row(`${index === cursor ? '›' : ' '} ${shell.name}  ${shell.path}`, index === cursor))
+        hint('Enter inicia la terminal · Esc cancela')
+        return { body, focus, footer }
+      }
+      add(`Carpeta inicial: ${view.environment?.cwd ?? '…'}`, 'accent', { bold: true })
+      if (view.items === undefined) add('Cargando las terminales…', 'muted')
+      else if (view.items.length === 0) add('No hay terminales en esta sesión. Pulsa n para abrir una.', 'muted')
+      view.items?.forEach((item, index) => {
+        const active = index === cursor
+        row(`${active ? '›' : ' '} ${terminalLine(item)}`, active)
+        add(`    ${item.cwd}`, 'muted')
+      })
+      if (editing === 'rename') {
+        notice('Nuevo nombre · Enter guarda · Esc cancela', 'accent')
+        notice(`${textOf(field)}▌`, 'text')
+      } else hint('Enter abrir · n nueva · r renombrar · x cerrar · Tab cambia de sección')
       return { body, focus, footer }
     }
     case 'files': {

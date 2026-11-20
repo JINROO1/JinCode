@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { call, RemoteMux, type RemoteConnection } from '../wire/remote.ts'
+import { call, RemoteMux, type RemoteConnection, type RemoteStream } from '../wire/remote.ts'
 import {
   SessionClient,
   type Follow,
@@ -30,6 +30,12 @@ import type {
 import { emptyTranscript, type Transcript } from '../transcript/reducer.ts'
 import { canReplaceSection } from './settings-model.ts'
 import { PAGE_LINES, childPath, parentPath, type FilesView } from './file-model.ts'
+import { TerminalClient } from './terminal-client.ts'
+import {
+  TerminalError, TerminalInputQueue, issueText, normalizeInfos, parseTerminalFrame, stateText,
+  type ShellView, type TerminalEnvironment, type TerminalInfo,
+} from './terminal-model.ts'
+import { ScreenBuffer, type ScreenLine } from './terminal-screen.ts'
 import { applyWorkspaceFrame, emptyWorkspaces, groupRows, sessionMove, workspaceMove, type GroupableSession, type WorkspaceView } from './workspace-model.ts'
 import {
   PanelClient,
@@ -65,7 +71,7 @@ export type SettingAction =
   | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
 
 /** Sections of the panel, in the order Tab cycles through them. */
-export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'goals', 'schedule', 'skills'] as const
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
@@ -92,6 +98,8 @@ export interface AppState {
   readonly panel: PanelState
   /** Questions and approvals waiting for the person; the first one is shown. */
   readonly interactions: readonly PendingInteraction[]
+  /** The terminal shown full screen; undefined when none is attached. */
+  readonly terminal: TerminalView | undefined
   /** Attachments waiting for the next prompt of the active Session. */
   readonly attachments: readonly AttachmentDraft[]
   readonly overlay: Overlay
@@ -113,7 +121,34 @@ export interface PanelState {
   readonly goal: GoalView | null | undefined
   readonly schedules: readonly ScheduleRow[] | undefined
   readonly skills: readonly SkillRow[] | undefined
+  /** The Session's terminals and the shell chooser; undefined until the section loads. */
+  readonly terminals: TerminalsView | undefined
   readonly note: string | undefined
+}
+
+/** The Session's terminals as the panel lists them. */
+export interface TerminalsView {
+  readonly sessionId: string
+  /** Undefined until the first list arrives. */
+  readonly items: readonly TerminalInfo[] | undefined
+  readonly environment: TerminalEnvironment | undefined
+  /** The shells to choose from, once the chooser has been opened. */
+  readonly shells: readonly ShellView[] | undefined
+  readonly choosing: boolean
+}
+
+/** The terminal shown full screen, when one is attached. */
+export interface TerminalView {
+  readonly sessionId: string
+  readonly id: string
+  /** `connecting` until the first snapshot; `disconnected` keeps the last screen until the person reconnects. */
+  readonly phase: 'connecting' | 'connected' | 'disconnected'
+  readonly info: TerminalInfo | undefined
+  /** Whether keystrokes reach the shell; read-only views show the screen only. */
+  readonly writable: boolean
+  readonly notice: string | undefined
+  /** Changes on every screen update, so the view redraws. */
+  readonly revision: number
 }
 
 /**
@@ -122,6 +157,16 @@ export interface PanelState {
  * @param provider - provider route id, for example `jincode`.
  * @returns the reference, for example `JINCODE_API_KEY`.
  */
+/**
+ * The text of an error for the panel.
+ * @param error - anything thrown.
+ * @returns the message.
+ */
+function messageOf(error: unknown): string {
+  if (error instanceof TerminalError) return issueText(error.issue)
+  return error instanceof Error ? error.message : String(error)
+}
+
 export function keyRefFor(provider: string): string {
   return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
 }
@@ -180,8 +225,9 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, skills: undefined, note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, skills: undefined, terminals: undefined, note: undefined },
     interactions: [],
+    terminal: undefined,
     attachments: [],
     overlay: 'none',
     notice: undefined,
@@ -189,12 +235,20 @@ export class AppController {
   }
 
   private workspaceFollow: { stop: () => void } | undefined
+  private readonly terminalClient: TerminalClient
+  private terminalWatch: { sessionId: string; stream: RemoteStream<unknown> } | undefined
+  private terminalScreen: ScreenBuffer | undefined
+  private terminalInput: TerminalInputQueue | undefined
+  private terminalAttach: { sessionId: string; stream: RemoteStream<unknown>; retain: RemoteStream<unknown> | undefined; expected: number } | undefined
+  /** The size of the window, which a new terminal and an attached screen use. */
+  private terminalSize = { cols: 80, rows: 24 }
 
   constructor(private readonly connection: RemoteConnection) {
     // The Host accepts one multiplexed socket per connection, so every stream shares this one.
     const mux = new RemoteMux(connection)
     this.sessions = new SessionClient(connection, mux)
     this.panelClient = new PanelClient(connection, mux)
+    this.terminalClient = new TerminalClient(connection, mux)
     this.interactionClient = new InteractionClient(connection, {
       onChange: pending => this.patch({ interactions: pending }),
       onError: error => this.fail(error),
@@ -579,6 +633,10 @@ export class AppController {
           await this.browseFiles(previous?.sessionId === sessionId ? previous.path : '')
           return
         }
+        case 'terminals': {
+          await this.loadTerminals()
+          return
+        }
         case 'goals': {
           if (sessionId === undefined) return
           this.patchPanel({ goal: (await this.panelClient.goal(sessionId)) ?? null })
@@ -877,9 +935,287 @@ export class AppController {
     this.workspaceFollow?.stop()
     this.follow?.stop()
     this.interactionClient.stop()
+    this.stopTerminalWatch()
+    void this.detachTerminal()
     this.sessions.close()
     this.listeners.clear()
   }
+
+  /**
+   * Read the active Session's terminals and its limits, and keep the list current
+   * with the roster stream while the section is open.
+   */
+  async loadTerminals(): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) {
+      this.stopTerminalWatch()
+      this.patchPanel({ terminals: undefined })
+      return
+    }
+    const current = this.state.panel.terminals
+    if (current?.sessionId !== sessionId) this.patchPanel({ terminals: { sessionId, items: undefined, environment: undefined, shells: undefined, choosing: false } })
+    this.ensureTerminalWatch(sessionId)
+    await this.attempt(async () => {
+      const [items, environment] = await Promise.all([
+        this.terminalClient.list(sessionId),
+        this.state.panel.terminals?.environment ?? this.terminalClient.environment(sessionId),
+      ])
+      this.patchTerminals(sessionId, { items, environment })
+    })
+  }
+
+  /** Open the shell chooser for a new terminal. */
+  async openTerminalChoice(): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) {
+      this.notePanel('Abre una sesión para usar la terminal.')
+      return
+    }
+    await this.attempt(async () => {
+      const shells = await this.terminalClient.shells(sessionId)
+      this.patchTerminals(sessionId, { shells, choosing: true })
+    })
+  }
+
+  /** Close the shell chooser without starting a terminal. */
+  cancelTerminalChoice(): void {
+    const sessionId = this.state.activeId
+    if (sessionId !== undefined) this.patchTerminals(sessionId, { choosing: false })
+  }
+
+  /**
+   * Start a shell in the Session's directory and attach to it.
+   * @param shellPath - a shell from the chooser; undefined selects the execution default.
+   */
+  async startTerminal(shellPath?: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      const id = await this.terminalClient.create(sessionId, this.terminalSize, shellPath)
+      this.patchTerminals(sessionId, { choosing: false })
+      await this.loadTerminals()
+      await this.attachTerminal(id)
+    })
+  }
+
+  /**
+   * Show a terminal full screen and take its input. Any terminal already shown is detached first.
+   * @param id - the terminal of the active Session.
+   */
+  async attachTerminal(id: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.detachTerminal()
+    this.patch({ terminal: { sessionId, id, phase: 'connecting', info: undefined, writable: false, notice: undefined, revision: 0 } })
+    const screen = new ScreenBuffer(this.terminalSize.cols, this.terminalSize.rows)
+    this.terminalScreen = screen
+    try {
+      const environment = this.state.panel.terminals?.environment ?? await this.terminalClient.environment(sessionId)
+      if (environment === undefined) throw new Error('no se pudieron leer los límites de la terminal')
+      if (this.state.panel.terminals?.sessionId === sessionId) this.patchTerminals(sessionId, { environment })
+      // Holding the terminal first keeps it for this window; the first item confirms the hold.
+      const retain = this.terminalClient.retain(sessionId, id)
+      await retain[Symbol.asyncIterator]().next()
+      const stream = this.terminalClient.attach(sessionId, id)
+      this.terminalAttach = { sessionId, stream, retain, expected: 0 }
+      this.terminalInput = new TerminalInputQueue(environment, undefined, command => stream.send(command))
+      void this.pumpTerminal(stream, screen, environment)
+    } catch (error) {
+      if (this.terminalScreen === screen) this.endTerminal(messageOf(error), 'disconnected')
+    }
+  }
+
+  /** Reattach to the terminal shown after its connection ended. */
+  async reconnectTerminal(): Promise<void> {
+    const id = this.state.terminal?.id
+    if (id !== undefined) await this.attachTerminal(id)
+  }
+
+  /** Stop showing the terminal full screen. Its process keeps running. */
+  async detachTerminal(): Promise<void> {
+    const attach = this.terminalAttach
+    const was = this.state.terminal !== undefined
+    this.terminalAttach = undefined
+    this.terminalInput = undefined
+    attach?.stream.cancel()
+    attach?.retain?.cancel()
+    this.terminalScreen?.dispose()
+    this.terminalScreen = undefined
+    if (was) this.patch({ terminal: undefined })
+    if (was && this.state.panel.section === 'terminals') await this.loadTerminals()
+  }
+
+  /**
+   * Send keystrokes to the attached terminal. A read-only view refuses them.
+   * @param data - the bytes the key produces.
+   */
+  sendTerminal(data: string): void {
+    const view = this.state.terminal
+    // Keys typed while the terminal connects are not sent: the screen is not there yet.
+    if (view === undefined || this.terminalInput === undefined) return
+    if (!view.writable) {
+      this.patchTerminal({ notice: issueText('readOnly') })
+      return
+    }
+    try {
+      this.terminalInput.write(data)
+    } catch (error) {
+      this.patchTerminal({ notice: messageOf(error) })
+    }
+  }
+
+  /**
+   * Follow a change of the window size.
+   * @param cols - columns of the window.
+   * @param rows - rows of the terminal area.
+   */
+  resizeTerminal(cols: number, rows: number): void {
+    if (cols === this.terminalSize.cols && rows === this.terminalSize.rows) return
+    this.terminalSize = { cols, rows }
+    const view = this.state.terminal
+    if (view === undefined || this.terminalScreen === undefined) return
+    if (view.writable) {
+      this.terminalScreen.resize(cols, rows)
+      this.terminalInput?.resize(cols, rows)
+      this.patchTerminal({ revision: view.revision + 1 })
+    }
+  }
+
+  /** @returns the viewport of the attached terminal, or undefined when none is shown. */
+  terminalLines(): ScreenLine[] | undefined {
+    return this.terminalScreen?.lines()
+  }
+
+  /** @returns whether the attached program wants application cursor keys. */
+  terminalApplicationCursor(): boolean {
+    return this.terminalScreen?.applicationCursor() ?? false
+  }
+
+  /**
+   * Rename a terminal of the active Session.
+   * @param id - the terminal.
+   * @param title - the new title; empty titles are refused here.
+   */
+  async renameTerminal(id: string, title: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const next = title.trim()
+    if (sessionId === undefined) return
+    if (next.length === 0) {
+      this.notePanel('El nombre no puede estar vacío.')
+      return
+    }
+    await this.attempt(async () => {
+      await this.terminalClient.rename(sessionId, id, next)
+      this.notePanel('Terminal renombrada.')
+      await this.loadTerminals()
+    })
+  }
+
+  /**
+   * End a terminal's process. Closing the one shown full screen also leaves it.
+   * @param id - the terminal of the active Session.
+   */
+  async closeTerminal(id: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      await this.terminalClient.close(sessionId, id)
+      if (this.state.terminal?.id === id) await this.detachTerminal()
+      this.notePanel('Terminal cerrada.')
+      await this.loadTerminals()
+    })
+  }
+
+  private patchTerminals(sessionId: string, partial: Partial<Omit<TerminalsView, 'sessionId'>>): void {
+    const current = this.state.panel.terminals
+    if (current?.sessionId !== sessionId) return
+    this.patchPanel({ terminals: { ...current, ...partial } })
+  }
+
+  private patchTerminal(partial: Partial<TerminalView>): void {
+    const current = this.state.terminal
+    if (current === undefined) return
+    this.patch({ terminal: { ...current, ...partial } })
+  }
+
+  private ensureTerminalWatch(sessionId: string): void {
+    if (this.terminalWatch?.sessionId === sessionId) return
+    this.stopTerminalWatch()
+    const stream = this.terminalClient.watch(sessionId)
+    this.terminalWatch = { sessionId, stream }
+    void (async () => {
+      try {
+        for await (const set of stream) {
+          if (this.terminalWatch?.stream !== stream) return
+          this.patchTerminals(sessionId, { items: normalizeInfos(set) })
+        }
+      } catch (error) {
+        if (this.terminalWatch?.stream === stream) {
+          this.terminalWatch = undefined
+          this.fail(error)
+        }
+      }
+    })()
+  }
+
+  private stopTerminalWatch(): void {
+    const watch = this.terminalWatch
+    this.terminalWatch = undefined
+    watch?.stream.cancel()
+  }
+
+  /** Apply the attachment's frames in order until it ends. */
+  private async pumpTerminal(stream: RemoteStream<unknown>, screen: ScreenBuffer, environment: TerminalEnvironment): Promise<void> {
+    try {
+      for await (const raw of stream) {
+        const attach = this.terminalAttach
+        if (attach?.stream !== stream || this.terminalScreen !== screen) return
+        const frame = parseTerminalFrame(raw)
+        if (frame === undefined) continue
+        if (frame.type === 'snapshot') {
+          await screen.reset(frame.screen)
+          attach.expected = frame.sequence + 1
+          const size = frame.writable ? this.terminalSize : { cols: frame.info.cols, rows: frame.info.rows }
+          screen.resize(size.cols, size.rows)
+          this.terminalInput = new TerminalInputQueue(environment, frame.inputWindow, command => stream.send(command))
+          if (frame.writable && (frame.info.cols !== size.cols || frame.info.rows !== size.rows)) this.terminalInput.resize(size.cols, size.rows)
+          this.patchTerminal({ phase: 'connected', info: frame.info, writable: frame.writable, notice: undefined, revision: (this.state.terminal?.revision ?? 0) + 1 })
+        } else if (frame.type === 'output') {
+          if (frame.sequence !== attach.expected) throw new TerminalError('invalidOutput')
+          attach.expected += 1
+          await screen.write(frame.data)
+          this.patchTerminal({ revision: (this.state.terminal?.revision ?? 0) + 1 })
+        } else if (frame.type === 'state') {
+          this.patchTerminal({ info: frame.info, writable: frame.writable })
+        } else {
+          const refusal = this.terminalInput?.ack(frame.sequence, frame.refusal)
+          if (refusal !== undefined) this.patchTerminal({ notice: issueText(refusal === 'read-only' ? 'readOnly' : 'notRunning') })
+        }
+      }
+      if (this.terminalAttach?.stream === stream) this.endTerminal(this.endNotice(), 'disconnected')
+    } catch (error) {
+      if (this.terminalAttach?.stream === stream) this.endTerminal(messageOf(error), 'disconnected')
+    }
+  }
+
+  /** What to say when the attachment ends: the process may have ended, or only the connection. */
+  private endNotice(): string {
+    const info = this.state.terminal?.info
+    const ended = info === undefined ? undefined : stateText(info)
+    if (ended !== undefined) return `La terminal ${ended}. Pulsa Enter para ver su última pantalla.`
+    return 'La conexión con la terminal terminó. Pulsa Enter para reconectar.'
+  }
+
+  /** The attachment is over; the last screen stays until the person reconnects or leaves. */
+  private endTerminal(notice: string, phase: 'disconnected'): void {
+    const attach = this.terminalAttach
+    this.terminalAttach = undefined
+    this.terminalInput = undefined
+    attach?.stream.cancel()
+    attach?.retain?.cancel()
+    this.patchTerminal({ phase, notice, writable: false })
+  }
+
 
   private attachmentsOf(sessionId: string | undefined): AttachmentDraft[] {
     return sessionId === undefined ? [] : this.attachmentsBySession.get(sessionId) ?? []

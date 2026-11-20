@@ -11,6 +11,10 @@ class FakeStream<T> implements RemoteStream<T> {
   private readonly waiters: Array<(result: IteratorResult<T>) => void> = []
   private ended = false
   constructor(readonly endpoint: string, readonly args: Record<string, unknown>) {}
+  readonly sent: unknown[] = []
+  send(value: unknown): void {
+    this.sent.push(value)
+  }
   push(value: T): void {
     const waiter = this.waiters.shift()
     if (waiter !== undefined) waiter({ value, done: false })

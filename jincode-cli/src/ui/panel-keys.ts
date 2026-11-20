@@ -283,6 +283,49 @@ export function handlePanelKey(keys: PanelKeys): void {
     return
   }
 
+  if (section === 'terminals') {
+    const view = state.panel.terminals
+    if (view === undefined || view.sessionId !== state.activeId) return
+    if (view.choosing) {
+      if (key.return) {
+        const shell = view.shells?.[cursor]
+        setCursor(0)
+        void controller.startTerminal(shell?.path)
+      }
+      return
+    }
+    if (editingItem !== undefined) {
+      if (!key.return) {
+        setField(editField(field, input, key))
+        return
+      }
+      const text = textOf(field)
+      const target = view.items?.[cursor]
+      setEditingItem(undefined)
+      setField(emptyBuffer())
+      if (target !== undefined) void controller.renameTerminal(target.id, text)
+      return
+    }
+    const target = view.items?.[cursor]
+    if (key.return) {
+      if (target !== undefined) void controller.attachTerminal(target.id)
+    } else if (input === 'n') {
+      setCursor(0)
+      void controller.openTerminalChoice()
+    } else if (input === 'r') {
+      if (target !== undefined) {
+        setEditingItem('rename')
+        setField(bufferOf(target.title.length > 0 ? target.title : target.shell.name))
+      }
+    } else if (input === 'x') {
+      if (target !== undefined) {
+        setCursor(index => Math.max(0, index - 1))
+        void controller.closeTerminal(target.id)
+      }
+    }
+    return
+  }
+
   if (section === 'goals') {
     if (state.panel.goal === null || state.panel.goal === undefined) {
       if (key.return) {

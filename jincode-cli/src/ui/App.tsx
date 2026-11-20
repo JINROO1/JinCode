@@ -13,6 +13,8 @@ import { glyph, palette } from './theme.ts'
 import { Panel } from './Panel.tsx'
 import { editField, eraseBack, isErase, type KeyLike } from './keys.ts'
 import { handlePanelKey } from './panel-keys.ts'
+import { TerminalScreen, TERMINAL_CHROME_ROWS } from './TerminalScreen.tsx'
+import { keyBytes } from '../app/terminal-model.ts'
 import { approvalKey, reduceQuestion, startCard, type CardState } from './interaction-keys.ts'
 import { approvalCard, questionCard, windowCard } from './interaction-view.ts'
 
@@ -130,8 +132,28 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     header: headerRows,
   })
 
+  // A full-screen terminal takes every key but its exit; the window size follows it.
+  const terminalShown = state.terminal !== undefined
+  useEffect(() => {
+    if (terminalShown) controller.resizeTerminal(Math.max(10, columns - 2), Math.max(1, rows - 1 - TERMINAL_CHROME_ROWS))
+  }, [terminalShown, columns, rows, controller])
+
   useInput((input, key) => {
     const overlay: Overlay = state.overlay
+    if (state.terminal !== undefined) {
+      // Ink reports Ctrl+] as the raw byte \x1d, without the ctrl flag.
+      if (input === '\x1d' || (key.ctrl && input === ']')) {
+        void controller.detachTerminal()
+        return
+      }
+      if (state.terminal.phase === 'disconnected') {
+        if (key.return) void controller.reconnectTerminal()
+        return
+      }
+      const bytes = keyBytes(input, key, controller.terminalApplicationCursor())
+      if (bytes !== undefined) controller.sendTerminal(bytes)
+      return
+    }
     if (key.ctrl && input === 'q') {
       controller.dispose()
       exit()
@@ -170,6 +192,10 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
       return
     }
     if (key.escape) {
+      if (overlay === 'panel' && state.panel.terminals?.choosing === true) {
+        controller.cancelTerminalChoice()
+        return
+      }
       if (overlay === 'panel' && (editingItem !== undefined || pendingPreset !== undefined)) {
         setEditingItem(undefined)
         setPendingPreset(undefined)
@@ -401,6 +427,10 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     elsewhere,
     interactive: cardLines !== undefined,
   })
+
+  if (state.terminal !== undefined) {
+    return <TerminalScreen state={state} lines={controller.terminalLines() ?? []} columns={columns} rows={rows} />
+  }
 
   return (
     <Box flexDirection="column" width={columns} height={rows - 1}>
@@ -653,7 +683,9 @@ function helpOverlay(width: number): React.ReactElement {
     ['Ctrl+N', 'nueva sesión'],
     ['Ctrl+K', 'lista de sesiones'],
     ['Ctrl+O', 'elegir modelo y razonamiento de la sesión'],
-    ['Ctrl+T', 'panel: cola, permisos, ajustes, metas, programaciones, habilidades'],
+    ['Ctrl+T', 'panel: cola, permisos, ajustes, espacios, archivos, terminal, metas, programaciones, habilidades'],
+    ['Panel › Terminal', 'Enter abre la terminal a pantalla completa · n nueva (elige shell) · r renombra · x cierra'],
+    ['Terminal a pantalla completa', 'Ctrl+] vuelve al panel; el resto de teclas va a la shell (también Ctrl+C y Esc)'],
     ['Ctrl+G', 'claves de los proveedores'],
     ['Ctrl+F', 'buscar en las sesiones'],
     ['Ctrl+R', 'renombrar la sesión'],

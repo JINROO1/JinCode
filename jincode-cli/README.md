@@ -26,7 +26,7 @@ intercambia por una cookie de sesión y no lo guarda en disco.
 | Ctrl+N | Nueva sesión |
 | Ctrl+K | Lista de sesiones (Enter abre) |
 | Ctrl+O | Elegir modelo y esfuerzo de razonamiento (Tab cambia el esfuerzo, Enter confirma) |
-| Ctrl+T | Panel: cola, permisos, ajustes, metas, programaciones y habilidades (ver abajo) |
+| Ctrl+T | Panel: cola, permisos, ajustes, espacios, archivos, terminal, metas, programaciones y habilidades (ver abajo) |
 | Ctrl+G | Claves de los proveedores: Tab cambia de proveedor, Enter guarda, Ctrl+D elimina |
 | Ctrl+F | Buscar en las sesiones (títulos y carpetas; contenido si el Host lo tiene activo) |
 | Ctrl+U | Adjuntar un archivo o una imagen (ruta; las imágenes se envían como imagen, el resto se sube) |
@@ -48,7 +48,10 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Programaciones | ↑↓ listan las tareas programadas. Solo lectura |
 | Espacios | Lista en vivo (stream `workspace/follow`): cada espacio con sus sesiones, después «Sin espacio» y «Archivadas». `n` crea un espacio con la ruta escrita (vacío = espacio predeterminado). En un espacio: `r` renombra, `x` lo quita (dos veces; sus archivos y sesiones se conservan), `[` `]` lo suben o bajan. En una sesión: `p` fija o desfija, `a` archiva o restaura (una sesión con turno en curso no se archiva), `[` `]` la mueven dentro de su espacio |
 | Archivos | Explora la carpeta raíz del espacio de la sesión activa (`workspaceFiles/list`). Enter abre una carpeta o un archivo (en páginas de 40 líneas, `[` `]` pasan página); Backspace sube, o cierra la página o la búsqueda. `/` busca por nombre (`workspaceFiles/search`); `h` incluye los ocultos en las búsquedas; `r` recarga. Si el Host corta la lista, se avisa |
+| Terminal | Lista las terminales de la sesión activa (`terminal/watch`, en vivo). Enter la abre a pantalla completa; `n` elige shell (`terminal/shells`) y la crea en la carpeta de la sesión; `r` renombra; `x` la cierra (`terminal/close`). Con «terminó (código N)» la terminal ya no corre; Enter sigue mostrando su última pantalla |
 | Habilidades | ↑↓ listan las habilidades de la sesión con su descripción |
+
+Terminal a pantalla completa: todas las teclas van a la shell (también Ctrl+C, Esc, Tab y las flechas), salvo **Ctrl+]**, que vuelve al panel. Si el Host marca la terminal de solo lectura, las teclas se avisan y no se envían. Si la conexión cae, la última pantalla se queda y Enter reconecta.
 
 Tarjetas de la sesión activa (aparecen sobre el compositor):
 
@@ -139,7 +142,7 @@ controlador en `tests/controller.test.ts`.
 | 7a | Ajustes editables (`settings/mutate` por campo con la revisión leída, `settings/replace` por sección sin secretos) | Hecho, probado en vivo |
 | 7b | Espacio de trabajo: crear, renombrar, quitar, ordenar, fijar y archivar (`workspace/*`, stream `workspace/follow`) | Hecho, probado en vivo |
 | 7c | Archivos del espacio (`workspaceFiles/*`: listar, leer por páginas, buscar) | Hecho, probado en vivo |
-| 7d | Terminal (`terminal/*`: shells, crear, adjuntar, renombrar, cerrar) | Pendiente |
+| 7d | Terminal (`terminal/*`: shells, crear, adjuntar a pantalla completa con acuses de entrada, renombrar, cerrar, retener, `watch` del listado) | Hecho, probado en vivo |
 | 8 | Programaciones (`schedule/create`, `edit`, `run`, `history`); metas editar (`goals/edit`); subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
@@ -151,6 +154,13 @@ apuntando al modelo de prueba; sin esa variable el turno falla con «Connection 
 Fase 7a, verificación en vivo: editar un campo (8 → 9) con revisión 1 → 2 y quitarlo con `u`
 (vuelve a 8, sin ✎); `settings/replace` con la revisión actual se acepta y con una revisión
 obsoleta el Host responde «changed since it was read».
+
+Fase 7d, verificación en vivo: crear una terminal con `bash` desde el selector; escribir `echo hola-pty`
+y ver la salida; Ctrl+C interrumpe `sleep 60` y la shell sigue; `exit` deja «terminó (código 0)» en la
+cabecera y en la lista; renombrar («Build»), cerrar con `x` (la lista se actualiza sola) y redimensionar
+(`resize` a 90×20 con acuse en orden). Lo que sale de la terminal se confirma con `terminal/attach`:
+el snapshot trae la pantalla completa, la primera salida lleva la secuencia snapshot + 1, y cada
+escritura recibe su acuse en orden.
 
 Fase 7c, verificación en vivo: listado de la raíz con carpetas primero; búsqueda `editorconfig`
 sin ocultos (sin resultados, como indica el Host) y con `h` (1 resultado); apertura del archivo en
