@@ -199,8 +199,39 @@ export class PanelClient {
    * @returns a handle that stops delivery.
    */
   followWorkspaces(onFrame: (frame: unknown) => void, onError: (error: unknown) => void): { stop: () => void } {
+    return this.follow('workspace/follow', onFrame, onError)
+  }
+
+  /**
+   * Follow the MCP servers. The Host sends the complete list on subscription and again after each status or entry change.
+   * @param onFrame - receives each complete list.
+   * @param onError - receives a terminal stream failure, for example a Host without this surface.
+   * @returns a handle that stops delivery.
+   */
+  followMcp(onFrame: (frame: unknown) => void, onError: (error: unknown) => void): { stop: () => void } {
+    return this.follow('mcpManager/watch', onFrame, onError)
+  }
+
+  /**
+   * Probe one MCP server: negotiate, list its tools, close. It does not touch the live instance.
+   * @param name - the server key.
+   * @returns the Host's probe result.
+   */
+  async probeMcp(name: string): Promise<unknown> {
+    return call<unknown>(this.connection, 'mcpManager/probe', { name })
+  }
+
+  /**
+   * Rebuild one MCP server from its current entry.
+   * @param name - the server key.
+   */
+  async restartMcp(name: string): Promise<void> {
+    await call(this.connection, 'mcpManager/restart', { name })
+  }
+
+  private follow(endpoint: string, onFrame: (frame: unknown) => void, onError: (error: unknown) => void): { stop: () => void } {
     if (this.mux === undefined) return { stop: () => {} }
-    const stream = this.mux.open('workspace/follow', {})
+    const stream = this.mux.open(endpoint, {})
     let stopped = false
     void (async () => {
       try {

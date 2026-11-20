@@ -103,6 +103,8 @@ const replies: Record<string, unknown> = {
     { name: 'extra', version: '0.1.0', description: '', enabled: false, installed: true, removable: true },
   ],
   'pluginManager/setPluginEnabled': {},
+  'mcpManager/probe': { ok: true, toolNames: ['echo'], truncated: false, durationMs: 1, closeConfirmed: true },
+  'mcpManager/restart': null,
   'pluginManager/setBundleEnabled': {},
   'pluginManager/removeBundle': {},
   'pluginManager/inspect': { status: 'accepted', name: 'extra', version: '0.2.0' },
@@ -294,6 +296,16 @@ test('plugins: an install carries a request identity that a later cancellation c
   assert.equal(last().method, 'pluginManager/installBundle')
   assert.deepEqual(last().args, { spec: 'extra@0.2.0', options: { requestId: installed.requestId } })
   assert.equal(installed.status, 'accepted')
+})
+
+test('mcp: a probe names the server and returns the Host result; a restart names the server', async () => {
+  const probed = await client.probeMcp('echo')
+  assert.equal(last().method, 'mcpManager/probe')
+  assert.deepEqual(last().args, { name: 'echo' })
+  assert.deepEqual(probed, { ok: true, toolNames: ['echo'], truncated: false, durationMs: 1, closeConfirmed: true })
+  await client.restartMcp('echo')
+  assert.equal(last().method, 'mcpManager/restart')
+  assert.deepEqual(last().args, { name: 'echo' })
 })
 
 test('skills are read with their wrapper', async () => {

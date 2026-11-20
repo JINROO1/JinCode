@@ -32,6 +32,12 @@ const state = {
   pinnedSessionIds: [] as string[],
   defaultInits: 0,
   followers: new Map<string, (value: unknown) => void>(),
+  mcpServers: [
+    { name: 'echo', configured: true, status: { state: 'connected', toolCount: 1, connectedAt: 1 } },
+  ] as Array<Record<string, any>>,
+  mcpWatchers: new Map<string, (value: unknown) => void>(),
+  mcpRestarts: [] as string[],
+  mcpUnsupported: false,
   terminals: [] as Array<Record<string, any>>,
   terminalWatchers: new Map<string, (value: unknown) => void>(),
   terminalAttachments: new Map<string, { id: string; out: number; send: (value: unknown) => void; end: () => void }>(),
@@ -161,6 +167,15 @@ function respond(method: string, args: any, raw: any = args): unknown {
       state.bundles = state.bundles.filter(item => item.name !== args.name)
       return {}
     }
+    case 'mcpManager/probe': {
+      if (args.name === 'echo') return { ok: true, serverInfo: { name: 'echo-test', version: '0.1.0' }, toolNames: ['echo'], truncated: false, durationMs: 3, closeConfirmed: true }
+      if (args.name === 'roto') return { ok: false, stage: 'connect', message: 'spawn ENOENT', durationMs: 2, closeConfirmed: true }
+      throw new Error(`mcp-manager: unknown server "${args.name}" — it is neither configured nor registered`)
+    }
+    case 'mcpManager/restart':
+      if (args.name !== 'echo') throw new Error(`mcp-manager: unknown server "${args.name}" — it is neither configured nor registered`)
+      state.mcpRestarts.push(args.name)
+      return null
     case 'pluginManager/inspect': return state.pluginAnswer
     case 'pluginManager/installBundle': return { ...state.pluginAnswer, status: 'installed' }
     case 'subagents/prompt': return { messageId: `m-${args.childSessionId}` }
@@ -247,6 +262,16 @@ before(async () => {
     wss.handleUpgrade(request, socket, head, ws => {
       ws.on('message', data => {
         const frame = JSON.parse(data.toString())
+        if (frame.type === 'open' && frame.endpoint === 'mcpManager/watch') {
+          const send = (value: unknown): void => { ws.send(JSON.stringify({ type: 'item', streamId: frame.streamId, value })) }
+          if (state.mcpUnsupported) {
+            ws.send(JSON.stringify({ type: 'error', streamId: frame.streamId, error: { code: 'remote/unknown-endpoint', message: 'no such endpoint: mcpManager/watch', details: {} } }))
+            return
+          }
+          state.mcpWatchers.set(frame.streamId, send)
+          send(state.mcpServers.map(item => ({ ...item })))
+          return
+        }
         if (frame.type === 'open' && frame.endpoint === 'workspace/follow') {
           const send = (value: unknown): void => { ws.send(JSON.stringify({ type: 'item', streamId: frame.streamId, value })) }
           state.followers.set(frame.streamId, send)
@@ -752,6 +777,55 @@ test('agents: a preset is selected only for a blank Session; a new Session takes
     assert.equal(app.snapshot().panel.agentYaml, undefined, 'the same key again closes it')
   } finally {
     session.blank = wasBlank
+    app.dispose()
+  }
+})
+
+test('mcp: the status feed fills the section and follows changes; a probe names the tools or the failing stage; a restart is sent', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await waitFor(() => app.snapshot().panel.mcp !== undefined)
+    assert.deepEqual(app.snapshot().panel.mcp?.map(item => [item.name, item.label]), [['echo', 'conectado · 1 herramienta']])
+    for (const send of state.mcpWatchers.values()) {
+      send([
+        { name: 'echo', configured: true, status: { state: 'connected', toolCount: 1, connectedAt: 1 } },
+        { name: 'roto', configured: true, status: { state: 'reconnecting', attempt: 2, maxAttempts: 10, nextRetryAtMs: 1, lastError: 'spawn ENOENT' } },
+      ])
+    }
+    await waitFor(() => app.snapshot().panel.mcp?.length === 2)
+    assert.equal(app.snapshot().panel.mcp?.[1]?.label, 'reconectando (intento 2 de 10)')
+    assert.equal(app.snapshot().panel.mcp?.[1]?.detail, 'spawn ENOENT')
+    await app.probeServer('echo')
+    assert.equal(app.snapshot().panel.mcpProbe?.ok, true)
+    assert.match(app.snapshot().panel.mcpProbe?.text ?? '', /^correcto \(echo-test 0\.1\.0\) · 1 herramienta: echo$/)
+    await app.probeServer('roto')
+    assert.equal(app.snapshot().panel.mcpProbe?.ok, false)
+    assert.equal(app.snapshot().panel.mcpProbe?.name, 'roto')
+    assert.match(app.snapshot().panel.mcpProbe?.text ?? '', /^falló en la conexión: spawn ENOENT$/)
+    await app.restartServer('echo')
+    assert.deepEqual(state.mcpRestarts, ['echo'])
+    assert.equal(app.snapshot().panel.note, 'echo: reiniciado')
+    await app.restartServer('no-existe')
+    assert.match(app.snapshot().error ?? '', /unknown server "no-existe"/)
+  } finally {
+    state.mcpServers = [{ name: 'echo', configured: true, status: { state: 'connected', toolCount: 1, connectedAt: 1 } }]
+    state.mcpRestarts = []
+    app.dispose()
+  }
+})
+
+test('mcp: a Host without the surface leaves the section empty with the reason, and the app keeps working', async () => {
+  const app = new AppController(connection)
+  state.mcpUnsupported = true
+  try {
+    await app.start()
+    await waitFor(() => app.snapshot().panel.mcpError !== undefined)
+    assert.equal(app.snapshot().panel.mcp, undefined)
+    assert.match(app.snapshot().panel.mcpError ?? '', /no such endpoint/)
+    assert.equal(app.snapshot().error, undefined, 'the feed failure is not a top-level error')
+  } finally {
+    state.mcpUnsupported = false
     app.dispose()
   }
 })

@@ -29,6 +29,9 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     agentYaml: undefined,
     plugins: undefined,
     pluginInspect: undefined,
+    mcp: undefined,
+    mcpError: undefined,
+    mcpProbe: undefined,
     schedules: undefined,
     scheduleLimit: undefined,
     scheduleHistory: undefined,
@@ -702,6 +705,56 @@ test('plugins: the rows show their state; a read-only one says why; a bundle sho
   }))
   assert.match(moved.lastFrame() ?? '', /Motivo: lo gestiona el propio gestor de plugins/)
   moved.unmount()
+})
+
+const mcpRows = [
+  { name: 'echo', configured: true, state: 'connected', label: 'conectado · 1 herramienta', tone: 'success' as const, detail: undefined, authorization: undefined },
+  { name: 'roto', configured: true, state: 'reconnecting', label: 'reconectando (intento 2 de 10)', tone: 'warning' as const, detail: 'spawn /no/such ENOENT', authorization: 'esperando el navegador del Host · abre https://auth.example/x' },
+]
+
+test('mcp: the rows show their status, the error and the authorization; the last probe is named', () => {
+  const frame = render(React.createElement(Panel, {
+    state: stateWith({ section: 'mcp', mcp: mcpRows, mcpProbe: { name: 'roto', ok: false, text: 'falló en la conexión: spawn ENOENT' } }),
+    width: 100, height: 40, cursor: 1, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  const shown = frame.lastFrame() ?? ''
+  assert.match(shown, /echo · conectado · 1 herramienta/)
+  assert.match(shown, /› roto · reconectando \(intento 2 de 10\)/)
+  assert.match(shown, /spawn \/no\/such ENOENT/)
+  assert.match(shown, /autorización: esperando el navegador del Host/)
+  assert.match(shown, /Último sondeo de roto: falló en la conexión: spawn ENOENT/)
+  assert.match(shown, /p sondea el servidor/)
+  frame.unmount()
+})
+
+test('mcp: before the first list the section says it is connecting, and an unsupported Host says why', () => {
+  const waiting = render(React.createElement(Panel, { state: stateWith({ section: 'mcp' }), width: 100, height: 40, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined }))
+  assert.match(waiting.lastFrame() ?? '', /Conectando con los servidores MCP/)
+  waiting.unmount()
+  const missing = render(React.createElement(Panel, { state: stateWith({ section: 'mcp', mcpError: 'no such endpoint: mcpManager/watch' }), width: 100, height: 40, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined }))
+  assert.match(missing.lastFrame() ?? '', /Los servidores MCP no están disponibles: no such endpoint/)
+  missing.unmount()
+  const empty = render(React.createElement(Panel, { state: stateWith({ section: 'mcp', mcp: [] }), width: 100, height: 40, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined }))
+  assert.match(empty.lastFrame() ?? '', /No hay servidores MCP configurados/)
+  empty.unmount()
+})
+
+test('mcp: p probes the server under the cursor and r restarts it; neither needs a second press', () => {
+  const { controller, calls } = fakeController()
+  const at = (input: string, cursor: number, key: KeyLike = {}) => handlePanelKey(keysFor(stateWith({ section: 'mcp', mcp: mcpRows }), controller, { input, key, cursor }))
+  at('p', 1)
+  assert.equal(calls.at(-1), 'probeServer "roto"')
+  at('r', 0)
+  assert.equal(calls.at(-1), 'restartServer "echo"')
+  at('x', 0)
+  assert.equal(calls.at(-1), 'restartServer "echo"', 'other keys do nothing')
+  at('p', 0, { ctrl: true })
+  assert.equal(calls.at(-1), 'restartServer "echo"', 'control keys do nothing')
+})
+
+test('mcp: the section is reached with Tab and counts its rows for the cursor', () => {
+  assert.equal(panelRowCount(stateWith({ section: 'mcp', mcp: mcpRows })), 2)
+  assert.equal(panelRowCount(stateWith({ section: 'mcp' })), 0)
 })
 
 test('plugins: a long bundle description takes one line and ends with an ellipsis', () => {

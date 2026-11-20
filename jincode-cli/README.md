@@ -49,6 +49,7 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Agentes | Lista los presets del Host, con el predeterminado marcado. Enter selecciona el preset en la sesión activa (`agentPresets/select`), solo si no tiene turnos: el Host lo rechaza si ya empezó. `n` abre una sesión nueva con ese preset (`session/create`). `v` muestra u oculta su declaración en YAML (`agentPresets/read`, solo lectura) |
 | Subagentes | Las sesiones hijas de la sesión activa, con «en curso» o «inactivo». Enter abre el subagente; con texto escrito, Enter lo envía (`subagents/prompt`, entrega en cola, o dirigida con Ctrl+D). Ctrl+X lo interrumpe (`subagents/interruptByUser`). Solo texto: las imágenes no se envían desde esta sección |
 | Plugins | Lista los bundles del perfil (primero) y los plugins del cargador, con su estado y el motivo cuando son de solo lectura (`pluginManager/listBundles`, `listPlugins`). Con el campo vacío, Enter activa o desactiva la fila (`setBundleEnabled`, `setPluginEnabled`); las filas de solo lectura no se envían. Escribe un paquete (nombre, `nombre@versión`, ruta o dirección git) y Enter lo inspecciona (`pluginManager/inspect`); si el Host lo acepta, otro Enter con el mismo texto lo instala (`installBundle`, con identidad de petición). Ctrl+X quita un bundle que el perfil permite quitar, tras pulsarlo dos veces (`removeBundle`) |
+| MCP | Los servidores MCP del Host con su estado en vivo (stream `mcpManager/watch`): conectado con sus herramientas, reconectando (intento de máximo), error con su motivo, o autorización pendiente. `p` sondea el servidor bajo el cursor (`mcpManager/probe`: negocia, lista sus herramientas y cierra, sin tocar la instancia viva) y deja el resultado bajo la lista; `r` lo reconstruye desde su entrada (`mcpManager/restart`, sin confirmación porque no borra nada). Los servidores se añaden y cambian en Ajustes, en la sección `mcp-manager` (`servers`) |
 | Espacios | Lista en vivo (stream `workspace/follow`): cada espacio con sus sesiones, después «Sin espacio» y «Archivadas». `n` crea un espacio con la ruta escrita (vacío = espacio predeterminado). En un espacio: `r` renombra, `x` lo quita (dos veces; sus archivos y sesiones se conservan), `[` `]` lo suben o bajan. En una sesión: `p` fija o desfija, `a` archiva o restaura (una sesión con turno en curso no se archiva), `[` `]` la mueven dentro de su espacio |
 | Archivos | Explora la carpeta raíz del espacio de la sesión activa (`workspaceFiles/list`). Enter abre una carpeta o un archivo (en páginas de 40 líneas, `[` `]` pasan página); Backspace sube, o cierra la página o la búsqueda. `/` busca por nombre (`workspaceFiles/search`); `h` incluye los ocultos en las búsquedas; `r` recarga. Si el Host corta la lista, se avisa |
 | Terminal | Lista las terminales de la sesión activa (`terminal/watch`, en vivo). Enter la abre a pantalla completa; `n` elige shell (`terminal/shells`) y la crea en la carpeta de la sesión; `r` renombra; `x` la cierra (`terminal/close`). Con «terminó (código N)» la terminal ya no corre; Enter sigue mostrando su última pantalla |
@@ -151,7 +152,7 @@ controlador en `tests/controller.test.ts`.
 | 7h | Agentes: listar presets, seleccionar en una sesión vacía, sesión nueva con preset, ver la declaración (`agentPresets/*`) | Hecho, probado en vivo |
 | 7g | Subagentes: listar los hijos, enviar un mensaje (cola o dirigir), interrumpir (`subagents/*`) | Hecho; probado contra el Host con ids ausentes. Crear un subagente real no fue posible en el entorno de prueba |
 | 8 | Plugins (`pluginManager/*`): listar, activar y desactivar plugins y bundles, quitar un bundle (dos pulsaciones), inspeccionar e instalar | Hecho con pruebas (Host simulado). En vivo: listado y lectura verificados; activar, quitar e instalar no (ver abajo) |
-| 9 | MCP (`mcpManager/*`) | Pendiente |
+| 9 | MCP (`mcpManager/*`): estado en vivo de los servidores, sondeo y reinicio | Hecho, probado en vivo con un servidor MCP de prueba (stdio). Autorización OAuth y edición de `servers` desde Ajustes no se probaron en vivo |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
 responder), aprobación `y` (la herramienta se ejecuta y el turno termina con «completado») y
@@ -208,6 +209,13 @@ launcher de `dsh` reescribió `profiles/web/package.json` añadiendo `dsh-acp-ap
 (`tests/panel.test.ts`, `tests/controller.test.ts`, `tests/panel-view.test.ts`). Pendiente: el Host
 puede pedir permiso para los scripts de compilación de un paquete (`approvedBuilds`); la CLI aún no
 ofrece esa respuesta y muestra el estado que devuelve el Host tal cual.
+
+Fase 9, verificación en vivo: con un servidor MCP de prueba (stdio, una herramienta `echo`) en
+Ajustes › mcp-manager, la sección MCP muestra «echo · conectado · 1 herramienta». Con un comando
+inexistente, «se agotaron los reintentos» y el error del sistema. `p` sobre ese servidor muestra
+«falló en la conexión» con el mismo error; `r` sobre `echo` responde «echo: reiniciado». El sondeo
+correcto (con `echo` como herramienta) se comprobó contra el Host. El stream se actualiza sin
+recargar: un cambio de estado llega a la lista.
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

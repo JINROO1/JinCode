@@ -110,6 +110,21 @@ function handlePluginKey(keys: PanelKeys): void {
 }
 
 /**
+ * Keys of the MCP section. `p` probes the server under the cursor (it connects,
+ * lists the tools and closes, without touching the live instance); `r` rebuilds
+ * it from its entry. Neither is destructive, so neither asks twice.
+ * @param keys - the panel keys.
+ */
+function handleMcpKey(keys: PanelKeys): void {
+  const { input, key, state, controller, cursor } = keys
+  if (key.ctrl) return
+  const server = state.panel.mcp?.[cursor]
+  if (server === undefined) return
+  if (input === 'p') void controller.probeServer(server.name)
+  else if (input === 'r') void controller.restartServer(server.name)
+}
+
+/**
  * Keys of the subagents section. Enter opens the subagent under the cursor, or
  * sends the typed message when there is one. Ctrl+X interrupts it and Ctrl+D
  * switches the delivery between the next turn (queue) and the current step (steer).
@@ -538,6 +553,11 @@ export function handlePanelKey(keys: PanelKeys): void {
 
   if (section === 'plugins') {
     handlePluginKey(keys)
+    return
+  }
+
+  if (section === 'mcp') {
+    handleMcpKey(keys)
     return
   }
 

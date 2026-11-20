@@ -51,6 +51,7 @@ import {
   type SkillRow,
 } from './panel-client.ts'
 import { mutationProblem, type ScheduleForm, type ScheduleRecord, type ScheduleTask } from './schedule-model.ts'
+import { normalizeMcpViews, probeRow, type McpProbeRow, type McpServerRow } from './mcp-model.ts'
 
 /** The overlay covering the conversation, if any. */
 export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help' | 'panel' | 'attach'
@@ -75,7 +76,7 @@ export type SettingAction =
   | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
 
 /** Sections of the panel, in the order Tab cycles through them. */
-export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'agents', 'plugins', 'subagents'] as const
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'agents', 'plugins', 'mcp', 'subagents'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
@@ -142,6 +143,12 @@ export interface PanelState {
   readonly plugins: { readonly plugins: readonly PluginRow[]; readonly bundles: readonly BundleRow[] } | undefined
   /** The last inspection or install, with the spec it was about. */
   readonly pluginInspect: (InspectRow & { readonly spec: string }) | undefined
+  /** The MCP servers, from the Host's stream; undefined until the first list arrives. */
+  readonly mcp: readonly McpServerRow[] | undefined
+  /** Why the MCP list is not available (for example a Host without this surface). */
+  readonly mcpError: string | undefined
+  /** The last probe, with the server it was about. */
+  readonly mcpProbe: McpProbeRow | undefined
   readonly note: string | undefined
 }
 
@@ -280,7 +287,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', agentPresets: undefined, agentYaml: undefined, plugins: undefined, pluginInspect: undefined, note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', agentPresets: undefined, agentYaml: undefined, plugins: undefined, pluginInspect: undefined, mcp: undefined, mcpError: undefined, mcpProbe: undefined, note: undefined },
     interactions: [],
     terminal: undefined,
     attachments: [],
@@ -290,6 +297,7 @@ export class AppController {
   }
 
   private workspaceFollow: { stop: () => void } | undefined
+  private mcpFollow: { stop: () => void } | undefined
   private readonly terminalClient: TerminalClient
   private terminalWatch: { sessionId: string; stream: RemoteStream<unknown> } | undefined
   private terminalScreen: ScreenBuffer | undefined
@@ -336,6 +344,11 @@ export class AppController {
     this.workspaceFollow ??= this.panelClient.followWorkspaces(
       frame => this.patchPanel({ workspaces: applyWorkspaceFrame(this.state.panel.workspaces ?? emptyWorkspaces(), frame) }),
       error => this.fail(error),
+    )
+    // The MCP list is a status feed: a Host without the surface only leaves the section empty.
+    this.mcpFollow ??= this.panelClient.followMcp(
+      frame => this.patchPanel({ mcp: normalizeMcpViews(frame), mcpError: undefined }),
+      error => this.patchPanel({ mcpError: error instanceof Error ? error.message : String(error) }),
     )
     await Promise.all([this.refreshSessions(), this.refreshCatalog(), this.refreshProviders()])
     const first = this.state.sessions[0]
@@ -1180,6 +1193,25 @@ export class AppController {
    * Turn a plugin on or off. Rows the profile cannot change explain why, and nothing is sent.
    * @param row - the plugin.
    */
+  async probeServer(name: string): Promise<void> {
+    await this.attempt(async () => {
+      const value = await this.panelClient.probeMcp(name)
+      this.patchPanel({ mcpProbe: probeRow(name, value), note: undefined })
+    })
+  }
+
+  /**
+   * Rebuild one MCP server from its current entry. The Host refuses while a
+   * previous cleanup is incomplete; that refusal is shown as the error.
+   * @param name - the server key.
+   */
+  async restartServer(name: string): Promise<void> {
+    await this.attempt(async () => {
+      await this.panelClient.restartMcp(name)
+      this.patchPanel({ note: `${name}: reiniciado` })
+    })
+  }
+
   async togglePlugin(row: PluginRow): Promise<void> {
     if (row.readOnly !== undefined) {
       this.patchPanel({ note: `solo lectura: ${readOnlyText(row.readOnly)}` })
@@ -1267,6 +1299,7 @@ export class AppController {
   dispose(): void {
     this.followPolling(false)
     this.workspaceFollow?.stop()
+    this.mcpFollow?.stop()
     this.follow?.stop()
     this.interactionClient.stop()
     this.stopTerminalWatch()

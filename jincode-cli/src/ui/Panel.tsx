@@ -54,6 +54,7 @@ export const SECTION_LABEL: Record<PanelSection, string> = {
   skills: 'Habilidades',
   agents: 'Agentes',
   plugins: 'Plugins',
+  mcp: 'MCP',
   subagents: 'Subagentes',
 }
 
@@ -112,6 +113,7 @@ export function panelRowCount(state: AppState): number {
     case 'skills': return panel.skills?.length ?? 0
     case 'agents': return panel.agentPresets?.length ?? 0
     case 'plugins': return pluginRowsOf(panel.plugins).length
+    case 'mcp': return panel.mcp?.length ?? 0
     case 'subagents': return subagentsOf(state.sessions, state.activeId).length
     case 'goals': return 0
   }
@@ -464,6 +466,25 @@ export function sectionView(props: PanelProps): SectionView {
         if (reason !== undefined) add(`Motivo: ${readOnlyText(reason)}`, 'faint')
       }
       hint('Enter con el campo vacío activa o desactiva la fila · con texto, Enter lo inspecciona · Ctrl+X quita un bundle (dos veces)')
+      return { body, focus, footer }
+    }
+    case 'mcp': {
+      if (panel.mcp === undefined) {
+        if (panel.mcpError !== undefined) add(`Los servidores MCP no están disponibles: ${panel.mcpError}`, 'error')
+        else add('Conectando con los servidores MCP…', 'muted')
+        return { body, focus, footer }
+      }
+      if (panel.mcp.length === 0) add('No hay servidores MCP configurados. Se añaden en Ajustes, en la sección mcp-manager (servers).', 'muted')
+      panel.mcp.forEach((server, index) => {
+        row(`${index === cursor ? '›' : ' '} ${server.name} · ${server.label}`, index === cursor)
+        if (server.detail !== undefined) add(`      ${oneLine(server.detail, width - 8)}`, server.tone === 'error' ? 'error' : 'muted')
+        if (server.authorization !== undefined) add(`      autorización: ${oneLine(server.authorization, width - 20)}`, 'muted')
+        if (server.configured === false) add('      ya no está configurado; el Host lo muestra hasta cerrarlo', 'faint')
+      })
+      if (panel.mcpProbe !== undefined) {
+        add(`Último sondeo de ${panel.mcpProbe.name}: ${panel.mcpProbe.text}`, panel.mcpProbe.ok ? 'success' : 'error')
+      }
+      hint('p sondea el servidor (negocia y lista sus herramientas) · r lo reinicia · la configuración está en Ajustes › mcp-manager')
       return { body, focus, footer }
     }
     case 'subagents': {
