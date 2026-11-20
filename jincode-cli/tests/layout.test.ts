@@ -52,7 +52,7 @@ test('wrapText keeps existing newlines', () => {
 })
 
 test('fitHints keeps whole hints and marks the omitted ones, never exceeding the width', () => {
-  const hints = ['Enter enviar', 'Ctrl+N nueva sesión', 'Ctrl+K sesiones', 'Ctrl+M modelo', 'Ctrl+Q salir']
+  const hints = ['Enter enviar', 'Ctrl+N nueva sesión', 'Ctrl+K sesiones', 'Ctrl+O modelo', 'Ctrl+Q salir']
   for (const width of [12, 30, 60, 200]) {
     const line = fitHints(hints, width)
     assert.ok(cellWidth(line) <= width, `"${line}" wider than ${width}`)
@@ -72,7 +72,7 @@ test('truncate shortens with an ellipsis only when needed', () => {
 })
 
 test('packHints never splits a hint and never exceeds the width', () => {
-  const hints = ['Enter enviar', 'Alt+Enter nueva línea', 'Ctrl+K sesiones', 'Ctrl+M modelo', 'Ctrl+G claves', 'Ctrl+F buscar', 'Ctrl+Q salir']
+  const hints = ['Enter enviar', 'Alt+Enter nueva línea', 'Ctrl+K sesiones', 'Ctrl+O modelo', 'Ctrl+G claves', 'Ctrl+F buscar', 'Ctrl+Q salir']
   for (const width of [24, 44, 60, 98]) {
     const lines = packHints(hints, width)
     for (const line of lines) assert.ok(cellWidth(line) <= width, `"${line}" wider than ${width}`)

@@ -25,7 +25,8 @@ intercambia por una cookie de sesión y no lo guarda en disco.
 | Alt+Enter · Ctrl+J | Nueva línea en el mensaje |
 | Ctrl+N | Nueva sesión |
 | Ctrl+K | Lista de sesiones (Enter abre) |
-| Ctrl+O | Elegir modelo de la sesión (Enter confirma) |
+| Ctrl+O | Elegir modelo y esfuerzo de razonamiento (Tab cambia el esfuerzo, Enter confirma) |
+| Ctrl+T | Panel: cola, permisos, ajustes, metas, programaciones y habilidades (ver abajo) |
 | Ctrl+G | Claves de los proveedores: Tab cambia de proveedor, Enter guarda, Ctrl+D elimina |
 | Ctrl+F | Buscar en las sesiones (títulos y carpetas; contenido si el Host lo tiene activo) |
 | Ctrl+R | Renombrar la sesión |
@@ -34,6 +35,17 @@ intercambia por una cookie de sesión y no lo guarda en disco.
 | PgUp · PgDn | Desplazar la conversación |
 | Ctrl+P · ? | Ayuda con todas las teclas (`?` solo con el mensaje vacío) |
 | Ctrl+Q | Salir. La sesión sigue en el Host |
+
+Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo cierran):
+
+| Sección | Teclas |
+|---|---|
+| Cola | ↑↓ eligen un mensaje · `s` lo dirige al turno en curso · `e` lo edita (Enter guarda, Esc cancela) · `x` lo quita |
+| Permisos | Enter aplica el preset. `danger-full-access` pide un segundo Enter porque no tiene confinamiento; Esc cancela |
+| Ajustes | ↑↓ eligen un espacio de nombres y muestran su valor. Solo lectura |
+| Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío) |
+| Programaciones | ↑↓ listan las tareas programadas. Solo lectura |
+| Habilidades | ↑↓ listan las habilidades de la sesión con su descripción |
 
 Nota: Ctrl+M y Ctrl+H no se usan, porque los terminales los envían como Enter y Retroceso.
 
@@ -46,13 +58,19 @@ src/
   transcript/reducer.ts   reductor puro: eventos durables + frames en vivo → filas de la conversación
   app/session-client.ts   operaciones de sesión sobre la API remota (list, create, prompt, follow, ...)
   app/controller.ts       estado de la aplicación y acciones; sin dependencia de Ink
+  app/panel-client.ts     llamadas y normalizadores del panel (cola, permisos, ajustes, metas,
+                          programaciones, habilidades); cada respuesta se normaliza antes de la UI
   ui/App.tsx              pantalla: cabecera, barra lateral (anchos ≥ 100 columnas), conversación,
                           compositor, superposiciones, teclas
+  ui/Panel.tsx            panel de seis secciones: cabecera y pie fijos, cuerpo con desplazamiento
+                          que sigue al cursor y avisa de las líneas ocultas
+  ui/panel-keys.ts        teclas del panel: reglas de confirmación y de edición
+  ui/keys.ts              tipos de tecla y edición de campos (borrado de ráfagas)
   ui/layout.ts            reglas puras: breakpoint, anchos en celdas (CJK/emoji), ajuste de texto
   ui/format.ts            filas de la transcripción y de la lista de sesiones, ya ajustadas al ancho
   ui/composer.ts          buffer del compositor (cursor por punto de código)
   ui/theme.ts             paleta y glifos
-tests/                    node:test; 65 pruebas (ver abajo)
+tests/                    node:test; 103 pruebas (ver abajo)
 ```
 
 Principios de la interfaz:
@@ -71,7 +89,7 @@ Principios de la interfaz:
 ```bash
 npm ci
 npm run typecheck   # tsc --noEmit, modo estricto
-npm test            # node:test, 65 pruebas
+npm test            # node:test, 103 pruebas
 ```
 
 Cobertura: capa wire (conexión, RPC, mux, errores tipados), reductor de la transcripción
@@ -83,7 +101,15 @@ búsqueda con respaldo, cancelar, seleccionar modelo).
 Verificación de extremo a extremo: la interfaz se ejecutó en un pseudo-terminal contra un
 servidor real del harness (perfil `jincode`) con un modelo OpenAI-compatible simulado: guardado
 de la clave, catálogo, envío con streaming de texto, llamada a la herramienta `bash` con su
-salida, renombrar, bifurcar, búsqueda y ayuda, en 44 y 100 columnas.
+salida, renombrar, bifurcar, búsqueda y ayuda, en 44 y 100 columnas. En la fase 5 se añadió:
+cancelar un turno con Esc, dirigir un mensaje durante el turno, editarlo y quitarlo, cambiar el
+permiso con confirmación para `danger-full-access`, crear, pausar y consultar una meta, y salir con
+Ctrl+Q.
+
+Pruebas de la fase 5: `tests/panel.test.ts` (normalizadores y `PanelClient` contra un Host falso
+que registra cada llamada), `tests/panel-view.test.ts` (render con `ink-testing-library`: ningún
+renglón supera el ancho, desplazamiento del cuerpo, teclas de cada sección) y el flujo del
+controlador en `tests/controller.test.ts`.
 
 ## Estado por fases
 
@@ -94,10 +120,11 @@ salida, renombrar, bifurcar, búsqueda y ayuda, en 44 y 100 columnas.
 | 2 | Sesiones: listar, crear, abrir, seguir, renombrar, bifurcar, buscar, cancelar | Hecho, probado |
 | 3 | Conversación: streaming de texto y razonamiento, herramientas, turnos, errores | Hecho, probado |
 | 4 | Modelos y credenciales: catálogo, selección, guardar y eliminar claves | Hecho, probado |
-| 5 | Cola de mensajes (editar, quitar, dirigir), selección de esfuerzo de razonamiento | Pendiente |
-| 6 | Adjuntos e imágenes; permisos y política de aprobación (`approval/policy`) | Pendiente |
-| 7 | Ajustes del Host (`settings/describe`, `settings/update`) y espacio de trabajo (archivos, terminal) | Pendiente |
-| 8 | Metas, programaciones, habilidades, subagentes, gestor de plugins | Pendiente |
+| 5 | Cola (dirigir, editar, quitar), permisos, esfuerzo de razonamiento | Hecho, probado en vivo |
+| 5b | Panel: ajustes (solo lectura), metas (crear, pausar, reanudar, completar, eliminar), programaciones y habilidades (solo lectura) | Hecho, probado en vivo |
+| 6 | Preguntas del agente (`userQuestions`: respuesta y espera temporizada con reclamo), adjuntos (`fileUploads/upload`, `session/attachment`), aprobaciones (`approval/policy`) | Pendiente |
+| 7 | Ajustes editables (`settings/update`, `settings/replace`); espacio de trabajo (`workspace/*`: crear, renombrar, fijar, archivar; `workspaceFiles/*`); terminal (`terminal/*`) | Pendiente |
+| 8 | Programaciones (`schedule/create`, `edit`, `run`, `history`); metas editar (`goals/edit`); subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
 
-Las fases 5 a 8 cubren el resto de la interfaz web. Cada una añade su controlador y sus pruebas
-sin tocar las anteriores.
+Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
+fase añade su controlador y sus pruebas sin tocar las anteriores.

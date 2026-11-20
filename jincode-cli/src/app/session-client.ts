@@ -23,6 +23,8 @@ export interface SessionSummary {
   readonly title?: string
   /** Model the next turn will use, as `provider/model`. */
   readonly model?: string
+  /** Permission preset the Session currently runs with. */
+  readonly permission?: string
   readonly cwd?: string
   readonly parentSessionId?: string
   readonly origin?: 'subagent'
@@ -315,7 +317,10 @@ export function summaryOf(value: unknown): SessionSummary | undefined {
   const model = next !== undefined && typeof next['provider'] === 'string' && typeof next['model'] === 'string'
     ? `${next['provider']}/${next['model']}`
     : undefined
+  const permissions = values !== undefined && isRecord(values['permissions']) ? values['permissions'] : undefined
+  const permission = permissions !== undefined && typeof permissions['currentValue'] === 'string' ? permissions['currentValue'] : undefined
   return {
+    ...permission === undefined ? {} : { permission },
     ...model === undefined ? {} : { model },
     sessionId: value['sessionId'],
     updatedAt: typeof value['updatedAt'] === 'number' ? value['updatedAt'] : 0,

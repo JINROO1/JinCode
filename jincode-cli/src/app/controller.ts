@@ -10,9 +10,22 @@ import {
   type SessionSummary,
 } from './session-client.ts'
 import { emptyTranscript, type Transcript } from '../transcript/reducer.ts'
+import {
+  PanelClient,
+  type GoalView,
+  type PresetView,
+  type QueueRow,
+  type ScheduleRow,
+  type SettingsRow,
+  type SkillRow,
+} from './panel-client.ts'
 
 /** The overlay covering the conversation, if any. */
-export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help'
+export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help' | 'panel'
+
+/** Sections of the panel, in the order Tab cycles through them. */
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'goals', 'schedule', 'skills'] as const
+export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
 export interface ProviderRoute {
@@ -35,9 +48,23 @@ export interface AppState {
   readonly searchResults: ReadonlyArray<{ sessionId: string; snippet: string }>
   /** Why content search did not run, when the title and folder match is all there is. */
   readonly searchNote: string | undefined
+  readonly panel: PanelState
   readonly overlay: Overlay
   readonly notice: string | undefined
   readonly error: string | undefined
+}
+
+/** Data behind the panel sections. Undefined means not loaded yet. */
+export interface PanelState {
+  readonly section: PanelSection
+  readonly queue: readonly QueueRow[] | undefined
+  readonly presets: PresetView | undefined
+  readonly settings: readonly SettingsRow[] | undefined
+  /** `null` when the Session has no goal; undefined before the first read. */
+  readonly goal: GoalView | null | undefined
+  readonly schedules: readonly ScheduleRow[] | undefined
+  readonly skills: readonly SkillRow[] | undefined
+  readonly note: string | undefined
 }
 
 /**
@@ -78,6 +105,7 @@ export function titleOf(session: SessionSummary | undefined): string {
 /** Controller bound to one server connection. */
 export class AppController {
   private readonly sessions: SessionClient
+  private readonly panelClient: PanelClient
   private follow: Follow | undefined
   private readonly listeners = new Set<(state: AppState) => void>()
   private state: AppState = {
@@ -91,6 +119,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, goal: undefined, schedules: undefined, skills: undefined, note: undefined },
     overlay: 'none',
     notice: undefined,
     error: undefined,
@@ -98,6 +127,7 @@ export class AppController {
 
   constructor(private readonly connection: RemoteConnection) {
     this.sessions = new SessionClient(connection)
+    this.panelClient = new PanelClient(connection)
   }
 
   /** @returns the current snapshot. */
@@ -268,13 +298,16 @@ export class AppController {
     this.patch({ modelCursor: (this.state.modelCursor + delta + count) % count })
   }
 
-  /** Select the highlighted model for the active Session. */
-  async chooseModel(): Promise<void> {
+  /**
+   * Select the highlighted model for the active Session.
+   * @param reasoningEffort - the effort to use, when the model offers efforts.
+   */
+  async chooseModel(reasoningEffort?: string): Promise<void> {
     const sessionId = this.state.activeId
     const choice = this.state.models[this.state.modelCursor]
     if (sessionId === undefined || choice === undefined) return
     await this.attempt(async () => {
-      await this.sessions.selectModel(sessionId, choice.provider, choice.model)
+      await this.sessions.selectModel(sessionId, choice.provider, choice.model, reasoningEffort)
       await this.refreshSessions()
       this.patch({ overlay: 'none', notice: `modelo: ${choice.provider}/${choice.model}` })
     })
@@ -334,6 +367,135 @@ export class AppController {
     this.patch({ overlay })
   }
 
+  /**
+   * Open the panel on a section and load its data.
+   * @param section - the section to show.
+   */
+  async openPanel(section: PanelSection = 'queue'): Promise<void> {
+    this.patch({ overlay: 'panel', panel: { ...this.state.panel, section, note: undefined } })
+    await this.loadSection(section)
+  }
+
+  /**
+   * Show another panel section and load it.
+   * @param section - the section to show.
+   */
+  async setSection(section: PanelSection): Promise<void> {
+    this.patch({ panel: { ...this.state.panel, section, note: undefined } })
+    await this.loadSection(section)
+  }
+
+  /**
+   * Load the data of one panel section. Sections that depend on a Session
+   * need an active one; without it they stay empty.
+   * @param section - the section to load.
+   */
+  async loadSection(section: PanelSection): Promise<void> {
+    const sessionId = this.state.activeId
+    await this.attempt(async () => {
+      switch (section) {
+        case 'queue': {
+          if (sessionId === undefined) return
+          this.patchPanel({ queue: await this.panelClient.queue(sessionId) })
+          return
+        }
+        case 'permissions': {
+          this.patchPanel({ presets: await this.panelClient.presets() })
+          return
+        }
+        case 'settings': {
+          this.patchPanel({ settings: await this.panelClient.settings() })
+          return
+        }
+        case 'goals': {
+          if (sessionId === undefined) return
+          this.patchPanel({ goal: (await this.panelClient.goal(sessionId)) ?? null })
+          return
+        }
+        case 'schedule': {
+          this.patchPanel({ schedules: await this.panelClient.schedules() })
+          return
+        }
+        case 'skills': {
+          if (sessionId === undefined) return
+          this.patchPanel({ skills: await this.panelClient.skills(sessionId) })
+          return
+        }
+      }
+    })
+  }
+
+  /**
+   * Steer, edit or remove a message waiting in the queue of the active Session.
+   * @param itemId - the queued message.
+   * @param action - the change to apply.
+   */
+  async queueAction(itemId: string, action: { kind: 'steer' } | { kind: 'remove' } | { kind: 'edit'; text: string }): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      await this.panelClient.updateQueue(sessionId, itemId, action)
+      this.patchPanel({ note: action.kind === 'steer' ? 'mensaje dirigido al turno en curso' : action.kind === 'remove' ? 'mensaje quitado de la cola' : 'mensaje editado' })
+      await this.loadSection('queue')
+    })
+  }
+
+  /**
+   * Switch the permission preset of the active Session.
+   * @param preset - a name from the catalog.
+   */
+  async setPreset(preset: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      await this.panelClient.setPreset(sessionId, preset)
+      await this.refreshSessions()
+      this.patchPanel({ note: `permisos: ${preset}` })
+    })
+  }
+
+  /**
+   * Create a goal for the active Session.
+   * @param objective - what the goal should achieve; blank objectives are ignored.
+   */
+  async createGoal(objective: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const text = objective.trim()
+    if (sessionId === undefined || text.length === 0) return
+    await this.attempt(async () => {
+      await this.panelClient.createGoal(sessionId, text)
+      this.patchPanel({ note: 'meta creada' })
+      await this.loadSection('goals')
+    })
+  }
+
+  /**
+   * Pause, resume or complete the goal of the active Session.
+   * @param action - the transition.
+   */
+  async goalAction(action: 'pause' | 'resume' | 'complete'): Promise<void> {
+    const sessionId = this.state.activeId
+    const goal = this.state.panel.goal
+    if (sessionId === undefined || goal === undefined || goal === null) return
+    await this.attempt(async () => {
+      await this.panelClient.goalAction(sessionId, goal, action)
+      this.patchPanel({ note: `meta: ${action}` })
+      await this.loadSection('goals')
+    })
+  }
+
+  /** Remove the goal of the active Session. */
+  async clearGoal(): Promise<void> {
+    const sessionId = this.state.activeId
+    const goal = this.state.panel.goal
+    if (sessionId === undefined || goal === undefined || goal === null) return
+    await this.attempt(async () => {
+      await this.panelClient.clearGoal(sessionId, goal)
+      this.patchPanel({ note: 'meta eliminada' })
+      await this.loadSection('goals')
+    })
+  }
+
   /** Refresh the Session list, most recently updated first. */
   async refreshSessions(): Promise<void> {
     await this.attempt(async () => {
@@ -378,6 +540,10 @@ export class AppController {
 
   private fail(error: unknown): void {
     this.patch({ error: error instanceof Error ? error.message : String(error) })
+  }
+
+  private patchPanel(partial: Partial<PanelState>): void {
+    this.patch({ panel: { ...this.state.panel, ...partial } })
   }
 
   private patch(partial: Partial<AppState>): void {

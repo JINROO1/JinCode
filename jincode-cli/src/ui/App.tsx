@@ -6,10 +6,13 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { Box, Text, useApp, useInput, useStdout } from 'ink'
 import { AppController, titleOf, type AppState, type Overlay } from '../app/controller.ts'
-import { backspace, bufferOf, clear, down, emptyBuffer, end, home, insert, layout, left, right, textOf, up, type Buffer } from './composer.ts'
+import { bufferOf, clear, down, emptyBuffer, end, home, insert, layout, left, right, textOf, up, type Buffer } from './composer.ts'
 import { cellWidth, packHints, pickLayout, truncate, wrapText } from './layout.ts'
 import { maskSecret, rule, sessionRows, transcriptLines, type StyledLine, type Tone } from './format.ts'
 import { glyph, palette } from './theme.ts'
+import { Panel } from './Panel.tsx'
+import { editField, eraseBack, isErase, type KeyLike } from './keys.ts'
+import { handlePanelKey } from './panel-keys.ts'
 
 const toneColor: Record<Tone, string> = {
   text: '',
@@ -27,6 +30,7 @@ const HINTS = [
   'Enter enviar',
   'Alt+Enter nueva línea',
   'Ctrl+K sesiones',
+  'Ctrl+T panel',
   'Ctrl+O modelo',
   'Ctrl+G claves',
   'Ctrl+F buscar',
@@ -79,6 +83,18 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
   const [listCursor, setListCursor] = useState(0)
   const [scroll, setScroll] = useState(0)
   const [lastQuery, setLastQuery] = useState('')
+  const [panelCursor, setPanelCursor] = useState(0)
+  const [pendingPreset, setPendingPreset] = useState<string | undefined>(undefined)
+  const [editingItem, setEditingItem] = useState<string | undefined>(undefined)
+  const [effortIndex, setEffortIndex] = useState(0)
+  const runningNow = state.transcript.running
+
+  // A finished turn may have changed the queue or the goal: refresh the panel once.
+  const [wasRunning, setWasRunning] = useState(runningNow)
+  if (wasRunning !== runningNow) {
+    setWasRunning(runningNow)
+    if (!runningNow && state.overlay === 'panel' && state.panel.section === 'queue') void controller.loadSection('queue')
+  }
 
   const layoutRule = pickLayout(columns)
   const activeSession = state.sessions.find(item => item.sessionId === state.activeId)
@@ -116,6 +132,12 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
       return
     }
     if (key.escape) {
+      if (overlay === 'panel' && (editingItem !== undefined || pendingPreset !== undefined)) {
+        setEditingItem(undefined)
+        setPendingPreset(undefined)
+        setField(emptyBuffer())
+        return
+      }
       if (overlay !== 'none') controller.setOverlay('none')
       else if (running) void controller.cancel()
       return
@@ -130,7 +152,20 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
       controller.setOverlay(overlay === 'sessions' ? 'none' : 'sessions')
       return
     }
+    if (key.ctrl && input === 't') {
+      if (overlay === 'panel') {
+        controller.setOverlay('none')
+        return
+      }
+      setPanelCursor(0)
+      setPendingPreset(undefined)
+      setEditingItem(undefined)
+      setField(emptyBuffer())
+      void controller.openPanel('queue')
+      return
+    }
     if (key.ctrl && input === 'o') {
+      setEffortIndex(0)
       void controller.openModels()
       return
     }
@@ -176,9 +211,37 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     }
 
     if (overlay === 'models') {
-      if (key.upArrow) controller.moveModel(-1)
-      else if (key.downArrow) controller.moveModel(1)
-      else if (key.return) void controller.chooseModel()
+      const choice = state.models[state.modelCursor]
+      const efforts = choice?.reasoningEfforts ?? []
+      if (key.upArrow) {
+        controller.moveModel(-1)
+        setEffortIndex(0)
+      } else if (key.downArrow) {
+        controller.moveModel(1)
+        setEffortIndex(0)
+      } else if (key.tab && efforts.length > 0) {
+        setEffortIndex(index => (index + 1) % efforts.length)
+      } else if (key.return) {
+        void controller.chooseModel(efforts.length > 0 ? efforts[effortIndex % efforts.length] : undefined)
+      }
+      return
+    }
+
+    if (overlay === 'panel') {
+      handlePanelKey({
+        input,
+        key,
+        state,
+        controller,
+        field,
+        setField,
+        cursor: panelCursor,
+        setCursor: setPanelCursor,
+        pendingPreset,
+        setPendingPreset,
+        editingItem,
+        setEditingItem,
+      })
       return
     }
 
@@ -259,12 +322,17 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     state,
     field,
     listCursor,
-    width: layoutRule.mainWidth,
+    // The main box pads one cell on each side, so its text is two cells narrower than its box.
+    width: layoutRule.mainWidth - 2,
     height: bodyHeight,
     transcript,
     scroll,
     now,
     activeSession,
+    panelCursor,
+    pendingPreset,
+    editingItem,
+    effortIndex,
   })
 
   return (
@@ -329,6 +397,10 @@ interface MainArgs {
   scroll: number
   now: number
   activeSession: AppState['sessions'][number] | undefined
+  panelCursor: number
+  pendingPreset: string | undefined
+  editingItem: string | undefined
+  effortIndex: number
 }
 
 function renderOverlayOrConversation(args: MainArgs): React.ReactElement {
@@ -343,6 +415,7 @@ function renderOverlayOrConversation(args: MainArgs): React.ReactElement {
       case 'rename': return renameOverlay(inner)
       case 'search': return searchOverlay(inner)
       case 'help': return helpOverlay(inner.width)
+      case 'panel': return <Panel state={state} width={inner.width} height={inner.height} cursor={inner.panelCursor} field={inner.field} editing={inner.editingItem} pendingPreset={inner.pendingPreset} />
       default: return conversation(inner)
     }
   })()
@@ -394,10 +467,10 @@ function sessionsOverlay({ state, listCursor, width, height, now }: MainArgs): R
   return <Lines lines={lines.slice(0, height)} />
 }
 
-function modelsOverlay({ state, width, height, activeSession }: MainArgs): React.ReactElement {
+function modelsOverlay({ state, width, height, activeSession, effortIndex }: MainArgs): React.ReactElement {
   const lines: StyledLine[] = [
     { text: 'Modelos', tone: 'brand', bold: true },
-    { text: 'Elige el modelo de la sesión actual · Enter confirma · Esc cierra', tone: 'faint' },
+    { text: 'Elige el modelo de la sesión · Tab cambia el razonamiento · Enter confirma · Esc cierra', tone: 'faint' },
   ]
   const current = activeSession?.model
   let previous = ''
@@ -411,7 +484,10 @@ function modelsOverlay({ state, width, height, activeSession }: MainArgs): React
     const label = `${mark} ${cursor ? '›' : ' '} ${choice.name ?? choice.model}`
     for (const line of wrapText(label, width)) lines.push({ text: line, tone: cursor ? 'brand' : 'text', bold: cursor })
     if (cursor && choice.reasoningEfforts !== undefined && choice.reasoningEfforts.length > 0) {
-      for (const line of wrapText(`    razonamiento: ${choice.reasoningEfforts.join(' · ')}`, width)) lines.push({ text: line, tone: 'muted' })
+      const efforts = choice.reasoningEfforts
+      const chosen = efforts[effortIndex % efforts.length]
+      const shown = efforts.map(effort => (effort === chosen ? `[${effort}]` : effort)).join(' ')
+      for (const line of wrapText(`    razonamiento: ${shown} · Tab cambia`, width)) lines.push({ text: line, tone: 'muted' })
     }
   })
   if (state.models.length === 0) {
@@ -473,7 +549,8 @@ function helpOverlay(width: number): React.ReactElement {
     ['Alt+Enter · Ctrl+J', 'nueva línea en el mensaje'],
     ['Ctrl+N', 'nueva sesión'],
     ['Ctrl+K', 'lista de sesiones'],
-    ['Ctrl+O', 'elegir modelo de la sesión'],
+    ['Ctrl+O', 'elegir modelo y razonamiento de la sesión'],
+    ['Ctrl+T', 'panel: cola, permisos, ajustes, metas, programaciones, habilidades'],
     ['Ctrl+G', 'claves de los proveedores'],
     ['Ctrl+F', 'buscar en las sesiones'],
     ['Ctrl+R', 'renombrar la sesión'],
@@ -565,54 +642,6 @@ function editComposer(buffer: Buffer, input: string, key: KeyLike): Buffer {
   if (key.ctrl && input === 'e') return end(buffer)
   if (key.ctrl || key.meta || key.tab || key.escape) return buffer
   return insert(buffer, input)
-}
-
-/** Apply one key to a single-line field. */
-function editField(field: Buffer, input: string, key: KeyLike): Buffer {
-  if (isErase(key, input)) return eraseBack(field, input)
-  if (key.leftArrow) return left(field)
-  if (key.rightArrow) return right(field)
-  if (key.ctrl || key.meta || key.tab || key.escape || key.return) return field
-  return insert(field, input.replace(/[\r\n]/g, ''))
-}
-
-/**
- * Whether an event is an erase. Ink flags a lone erase byte, but a burst of them
- * arrives as plain text, so the input itself is checked too.
- * @param key - the parsed key flags.
- * @param input - the raw input.
- * @returns true for an erase key or a run of erase bytes.
- */
-function isErase(key: KeyLike, input: string): boolean {
-  return key.backspace === true || key.delete === true || /^[\x7f\b]+$/.test(input)
-}
-
-/**
- * Erase one character per erase byte received. A terminal sends one per key,
- * but a held key or a paste can deliver several in one event.
- * @param buffer - the buffer to edit.
- * @param input - the raw input of the event.
- * @returns the buffer with that many characters removed before the cursor.
- */
-function eraseBack(buffer: Buffer, input: string): Buffer {
-  const count = Math.max(1, Array.from(input).filter(char => char === '\x7f' || char === '\b').length)
-  let next = buffer
-  for (let i = 0; i < count; i++) next = backspace(next)
-  return next
-}
-
-interface KeyLike {
-  backspace?: boolean
-  delete?: boolean
-  leftArrow?: boolean
-  rightArrow?: boolean
-  upArrow?: boolean
-  downArrow?: boolean
-  ctrl?: boolean
-  meta?: boolean
-  tab?: boolean
-  escape?: boolean
-  return?: boolean
 }
 
 /**

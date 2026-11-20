@@ -12,7 +12,9 @@ const state = {
   keys: new Set<string>(),
   searchDisabled: false,
   calls: [] as Array<{ method: string; args: any }>,
-  sessions: [{ sessionId: 's-1', updatedAt: 1000, running: false, blank: false, cwd: '/tmp', projections: { values: { title: 'Primera', modelSelection: { next: { provider: 'jincode', model: 'gpt-4o-mini' } } } } }],
+  sessions: [{ sessionId: 's-1', updatedAt: 1000, running: false, blank: false, cwd: '/tmp', projections: { values: { title: 'Primera', modelSelection: { next: { provider: 'jincode', model: 'gpt-4o-mini' } }, permissions: { currentValue: 'danger-full-access' } } } }],
+  queue: [] as Array<{ id: string; placement: string; content: unknown }>,
+  goal: null as null | { id: string; revision: number; objective: string; phase: string; roundsStarted: number; maxGoalRounds: number },
 }
 
 let server: Server
@@ -39,6 +41,29 @@ function respond(method: string, args: any): unknown {
       if (state.searchDisabled) throw new Error('session search is disabled: this deployment configures the session-query index with openAt "never"')
       return { items: [{ sessionId: 's-1', snippet: 'coincidencia' }] }
     case 'session/selectModel': return {}
+    case 'session/state': return { queue: state.queue, pendingInput: [] }
+    case 'session/updateQueue': {
+      if (!state.queue.some(item => item.id === args.itemId)) throw new Error('queued item is no longer pending')
+      const action = args.action
+      if (action.kind === 'remove' || action.kind === 'steer') state.queue = state.queue.filter(item => item.id !== args.itemId)
+      if (action.kind === 'edit') state.queue = state.queue.map(item => (item.id === args.itemId ? { ...item, content: action.content } : item))
+      return {}
+    }
+    case 'permissionPresets/catalog': return { options: [{ value: 'read-only', name: 'read-only' }, { value: 'danger-full-access', name: 'danger-full-access' }], defaultPreset: 'danger-full-access' }
+    case 'permissionPresets/set':
+      state.sessions[0] = { ...state.sessions[0]!, projections: { values: { ...state.sessions[0]!.projections.values, permissions: { currentValue: args.preset } } } } as any
+      return { currentValue: args.preset }
+    case 'settings/describe': return { writable: false, namespaces: [{ ns: 'agent', revision: 2, applies: 'next-turn', value: { maxSteps: 40 } }] }
+    case 'goals/get': return state.goal ?? undefined
+    case 'goals/create':
+      state.goal = { id: 'goal-1', revision: 1, objective: args.objective, phase: 'active', roundsStarted: 0, maxGoalRounds: 8 }
+      return { ref: { id: 'goal-1', revision: 1 } }
+    case 'goals/pause': if (state.goal) state.goal = { ...state.goal, phase: 'paused', revision: state.goal.revision + 1 }; return {}
+    case 'goals/resume': if (state.goal) state.goal = { ...state.goal, phase: 'active', revision: state.goal.revision + 1 }; return {}
+    case 'goals/complete': if (state.goal) state.goal = { ...state.goal, phase: 'complete', revision: state.goal.revision + 1 }; return {}
+    case 'goals/clear': state.goal = null; return {}
+    case 'schedule/list': return { items: [{ id: 'sch-1', title: 'Resumen diario', status: 'active' }], shown: 1, total: 1 }
+    case 'skills/list': return { skills: [{ name: 'pdf', description: 'Lee PDF' }] }
     case 'session/prompt': return { accepted: true }
     case 'session/cancel': return {}
     default: return {}
@@ -228,6 +253,120 @@ test('cancel sends session/cancel for the active Session', async () => {
     assert.deepEqual(cancel?.args.request, { sessionId: 's-1' })
     assert.ok(app.snapshot().notice?.includes('cancelado'))
   } finally {
+    app.dispose()
+  }
+})
+
+test('the panel reads each section from its own endpoint and keeps the data in the snapshot', async () => {
+  state.queue = [{ id: 'q1', placement: 'queued', content: [{ type: 'text', text: 'pendiente' }] }]
+  state.goal = null
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('queue')
+    assert.deepEqual(app.snapshot().panel.queue, [{ id: 'q1', placement: 'queued', text: 'pendiente' }])
+    await app.setSection('permissions')
+    assert.deepEqual(app.snapshot().panel.presets?.options, ['read-only', 'danger-full-access'])
+    await app.setSection('settings')
+    assert.equal(app.snapshot().panel.settings?.[0]?.ns, 'agent')
+    await app.setSection('goals')
+    assert.equal(app.snapshot().panel.goal, null)
+    await app.setSection('schedule')
+    assert.equal(app.snapshot().panel.schedules?.[0]?.title, 'Resumen diario')
+    await app.setSection('skills')
+    assert.equal(app.snapshot().panel.skills?.[0]?.name, 'pdf')
+    assert.equal(app.snapshot().overlay, 'panel')
+  } finally {
+    app.dispose()
+  }
+})
+
+test('queue actions send the change, then the queue is read again', async () => {
+  state.queue = [{ id: 'q1', placement: 'queued', content: [{ type: 'text', text: 'uno' }] }, { id: 'q2', placement: 'queued', content: [{ type: 'text', text: 'dos' }] }]
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('queue')
+    await app.queueAction('q1', { kind: 'remove' })
+    assert.deepEqual(app.snapshot().panel.queue?.map(row => row.id), ['q2'])
+    assert.ok(app.snapshot().panel.note?.includes('quitado'))
+    await app.queueAction('q2', { kind: 'edit', text: 'editado' })
+    assert.deepEqual(app.snapshot().panel.queue?.[0]?.text, 'editado')
+    const update = state.calls.findLast(call => call.method === 'session/updateQueue')
+    assert.deepEqual(update?.args.request.action, { kind: 'edit', content: [{ type: 'text', text: 'editado' }] })
+  } finally {
+    state.queue = []
+    app.dispose()
+  }
+})
+
+test('a refused queue change shows the Host message as the error, not a crash', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('queue')
+    await app.queueAction('no-existe', { kind: 'steer' })
+    assert.ok(app.snapshot().error !== undefined)
+  } finally {
+    app.dispose()
+  }
+})
+
+test('setPreset applies the preset and the Session reports it afterwards', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.setPreset('read-only')
+    const set = state.calls.findLast(call => call.method === 'permissionPresets/set')
+    assert.deepEqual(set?.args.request, { sessionId: 's-1', preset: 'read-only' })
+    assert.equal(app.snapshot().sessions.find(item => item.sessionId === 's-1')?.permission, 'read-only')
+  } finally {
+    state.sessions[0] = { ...state.sessions[0]!, projections: { values: { ...state.sessions[0]!.projections.values, permissions: { currentValue: 'danger-full-access' } } } } as any
+    app.dispose()
+  }
+})
+
+test('goal flow: create, pause, resume, complete, clear; each step reads the goal back', async () => {
+  state.goal = null
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('goals')
+    await app.createGoal('   ')
+    assert.equal(state.calls.some(call => call.method === 'goals/create' && call.args.request.objective === ''), false, 'a blank objective is not sent')
+    await app.createGoal('  terminar el informe  ')
+    assert.equal(app.snapshot().panel.goal?.objective, 'terminar el informe')
+    await app.goalAction('pause')
+    assert.equal(app.snapshot().panel.goal?.phase, 'paused')
+    await app.goalAction('resume')
+    assert.equal(app.snapshot().panel.goal?.phase, 'active')
+    await app.goalAction('complete')
+    assert.equal(app.snapshot().panel.goal?.phase, 'complete')
+    await app.clearGoal()
+    assert.equal(app.snapshot().panel.goal, null)
+    const clear = state.calls.findLast(call => call.method === 'goals/clear')
+    assert.equal(clear?.args.agentId, 's-1')
+    assert.equal(clear?.args.ref.revision, 4)
+  } finally {
+    state.goal = null
+    app.dispose()
+  }
+})
+
+test('the chosen reasoning effort is sent with the model selection', async () => {
+  state.keys.add('JINCODE_API_KEY')
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openModels()
+    const index = app.snapshot().models.findIndex(choice => choice.model === 'x-1')
+    assert.ok(index >= 0)
+    app.moveModel(index - app.snapshot().modelCursor)
+    await app.chooseModel('high')
+    const select = state.calls.findLast(call => call.method === 'session/selectModel')
+    assert.equal(select?.args.request.reasoningEffort, 'high')
+  } finally {
+    state.keys.delete('JINCODE_API_KEY')
     app.dispose()
   }
 })
