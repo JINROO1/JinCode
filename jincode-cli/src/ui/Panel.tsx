@@ -440,8 +440,11 @@ export function sectionView(props: PanelProps): SectionView {
       add(`Paquete a inspeccionar o instalar: ${textOf(field)}▌`, 'text')
       const inspected = panel.pluginInspect
       if (inspected !== undefined) {
-        add(`Inspección de ${inspected.spec}: ${inspected.status}${inspected.reason === undefined ? '' : ` — ${inspected.reason}`}`, inspected.status === 'accepted' ? 'success' : 'muted')
+        const installed = inspected.phase === 'install'
+        const tone = installed ? (inspected.status === 'instalado' ? 'success' : inspected.status === 'falló' ? 'error' : 'muted') : inspected.status === 'accepted' ? 'success' : 'muted'
+        add(`${installed ? 'Instalación' : 'Inspección'} de ${inspected.spec}: ${inspected.status}${inspected.reason === undefined ? '' : ` — ${inspected.reason}`}`, tone)
         if (inspected.status === 'accepted') add('Enter otra vez, con el mismo texto, lo instala.', 'muted')
+        if (inspected.pendingBuilds !== undefined && inspected.pendingBuilds.length > 0) add('Enter otra vez, con el mismo texto, permite esos scripts y reinstala.', 'muted')
       }
       if (panel.plugins === undefined) {
         add('Cargando los plugins…', 'muted')

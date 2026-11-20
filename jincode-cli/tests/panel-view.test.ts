@@ -784,6 +784,27 @@ test('plugins: Enter toggles the row under the cursor; with text it inspects, an
   assert.equal(calls.at(-1), 'inspectSpec "otro"', 'an inspection for another spec does not install')
 })
 
+test('plugins: a pending install script is approved by one Enter with the same text; a changed text inspects again', () => {
+  const { controller, calls } = fakeController()
+  const pending = { spec: 'pkg', phase: 'install' as const, status: 'pendiente de permiso', name: undefined, version: undefined, reason: 'pnpm no ejecutó', pendingBuilds: ['esbuild'] }
+  const at = (field = bufferOf('pkg')) => keysFor(stateWith(pluginPanel({ pluginInspect: pending })), controller, { input: '', key: { return: true }, cursor: 0, field })
+  handlePanelKey(at())
+  assert.equal(calls.at(-1), 'installSpec "pkg" ["esbuild"]')
+  handlePanelKey(at(bufferOf('otro')))
+  assert.equal(calls.at(-1), 'inspectSpec "otro"', 'a different text is inspected, not approved')
+})
+
+test('plugins: an installed result says so and its line names the scripts that wait for approval', () => {
+  const frame = render(React.createElement(Panel, {
+    state: stateWith(pluginPanel({ pluginInspect: { spec: 'pkg', phase: 'install', status: 'pendiente de permiso', name: undefined, version: undefined, reason: 'pnpm no ejecutó los scripts de instalación de esbuild; Enter, con el mismo texto, los permite para este perfil y vuelve a instalar.', pendingBuilds: ['esbuild'] } })),
+    width: 100, height: 40, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  const shown = frame.lastFrame() ?? ''
+  assert.match(shown, /Instalación de pkg: pendiente de permiso/)
+  assert.match(shown, /Enter otra vez, con el mismo texto, permite esos scripts y reinstala\./)
+  frame.unmount()
+})
+
 test('plugins: Ctrl+X asks twice before removing a bundle; a plugin row is never removed', () => {
   const { controller, calls } = fakeController()
   let armed: string | undefined

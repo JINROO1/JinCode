@@ -8,6 +8,7 @@ import { call, type RemoteConnection, type RemoteMux } from '../wire/remote.ts'
 import { normalizeWorkspace, type WorkspaceRow } from './workspace-model.ts'
 import { normalizeListing, normalizeMatches, normalizePage, type FilePage, type FileEntry, type SearchResult } from './file-model.ts'
 import { normalizeRecords, normalizeTask, normalizeTasks, type ScheduleRecord, type ScheduleTask } from './schedule-model.ts'
+import { installOutcomeOf, type InstallOutcome } from './plugin-install-model.ts'
 
 /** One message waiting for the running turn. */
 export interface QueueRow {
@@ -599,12 +600,15 @@ export class PanelClient {
   /**
    * Install a package. The request identity is minted here, so the install can be cancelled by name.
    * @param spec - the package spec.
-   * @returns the Host's answer, with its status.
+   * @param approvedBuilds - install scripts the person allowed for this profile, from a previous failure.
+   * @returns the request identity and the Host's installation outcome.
    */
-  async installSpec(spec: string): Promise<{ requestId: string } & InspectRow> {
+  async installSpec(spec: string, approvedBuilds?: readonly string[]): Promise<{ requestId: string } & InstallOutcome> {
     const requestId = randomUUID()
-    const value = await call<unknown>(this.connection, 'pluginManager/installBundle', { spec, options: { requestId } })
-    return { requestId, ...normalizeInspect(value) }
+    const options: Record<string, unknown> = { requestId }
+    if (approvedBuilds !== undefined && approvedBuilds.length > 0) options['approvedBuilds'] = [...approvedBuilds]
+    const value = await call<unknown>(this.connection, 'pluginManager/installBundle', { spec, options })
+    return { requestId, ...installOutcomeOf(value) }
   }
 
   /** @returns how many ended tasks the Host removed. */

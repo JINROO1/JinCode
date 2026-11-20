@@ -52,6 +52,7 @@ import {
 } from './panel-client.ts'
 import { mutationProblem, type ScheduleForm, type ScheduleRecord, type ScheduleTask } from './schedule-model.ts'
 import { normalizeMcpViews, probeRow, type McpProbeRow, type McpServerRow } from './mcp-model.ts'
+import { installLineOf } from './plugin-install-model.ts'
 
 /** The overlay covering the conversation, if any. */
 export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help' | 'panel' | 'attach'
@@ -142,7 +143,8 @@ export interface PanelState {
   /** Plugins and bundles as the Host lists them; undefined until the section loads. */
   readonly plugins: { readonly plugins: readonly PluginRow[]; readonly bundles: readonly BundleRow[] } | undefined
   /** The last inspection or install, with the spec it was about. */
-  readonly pluginInspect: (InspectRow & { readonly spec: string }) | undefined
+  /** The last inspection (`phase: inspect`) or installation (`phase: install`) of a package spec. */
+  readonly pluginInspect: (InspectRow & { readonly spec: string; readonly phase?: 'inspect' | 'install'; readonly pendingBuilds?: readonly string[] }) | undefined
   /** The MCP servers, from the Host's stream; undefined until the first list arrives. */
   readonly mcp: readonly McpServerRow[] | undefined
   /** Why the MCP list is not available (for example a Host without this surface). */
@@ -1265,18 +1267,28 @@ export class AppController {
     if (text.length === 0) return
     await this.attempt(async () => {
       const result = await this.panelClient.inspectSpec(text)
-      this.patchPanel({ pluginInspect: { spec: text, ...result } })
+      this.patchPanel({ pluginInspect: { spec: text, phase: 'inspect', ...result } })
     })
   }
 
   /**
-   * Install the package that was inspected and accepted.
+   * Install the package that was inspected and accepted, or retry a failed install with the install scripts
+   * the person allowed. The result replaces the inspection, so a second Enter inspects again instead of
+   * installing the same package twice.
    * @param spec - the spec.
+   * @param approvedBuilds - the pending scripts allowed for this retry.
    */
-  async installSpec(spec: string): Promise<void> {
+  async installSpec(spec: string, approvedBuilds?: readonly string[]): Promise<void> {
     await this.attempt(async () => {
-      const result = await this.panelClient.installSpec(spec)
-      this.patchPanel({ pluginInspect: { spec, status: result.status, name: result.name, version: result.version, reason: result.reason }, note: `instalación: ${result.status}` })
+      const result = await this.panelClient.installSpec(spec, approvedBuilds)
+      const line = installLineOf(result)
+      this.patchPanel({
+        pluginInspect: {
+          spec, phase: 'install', status: line.status, name: result.name, version: result.version,
+          reason: line.reason, pendingBuilds: line.approvable ? result.pendingBuilds : undefined,
+        },
+        note: `instalación de ${spec}: ${line.status}`,
+      })
       await this.loadSection('plugins')
     })
   }

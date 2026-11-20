@@ -97,6 +97,10 @@ function handlePluginKey(keys: PanelKeys): void {
       if (inspected !== undefined && inspected.spec === text && inspected.status === 'accepted') {
         setField(emptyBuffer())
         void controller.installSpec(text)
+      } else if (inspected !== undefined && inspected.spec === text && inspected.pendingBuilds !== undefined && inspected.pendingBuilds.length > 0) {
+        // The line above named the scripts; this Enter, with the same text, allows exactly those and retries.
+        setField(emptyBuffer())
+        void controller.installSpec(text, inspected.pendingBuilds)
       } else void controller.inspectSpec(text)
       return
     }

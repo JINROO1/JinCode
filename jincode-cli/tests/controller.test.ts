@@ -22,6 +22,7 @@ const state = {
     { name: 'extra', version: '0.1.0', description: 'Extra', enabled: true, installed: true, removable: true },
   ] as Array<Record<string, any>>,
   pluginAnswer: { status: 'accepted', name: 'nuevo', version: '1.0.0' } as Record<string, unknown>,
+  installAnswer: { stage: 'install', target: 'nuevo', changed: true, application: 'applied', bundle: 'nuevo', version: '1.0.0' } as Record<string, unknown>,
   searchDisabled: false,
   calls: [] as Array<{ method: string; args: any }>,
   sessions: [{ sessionId: 's-1', updatedAt: 1000, running: false, blank: false, cwd: '/tmp', projections: { values: { title: 'Primera', modelSelection: { next: { provider: 'jincode', model: 'gpt-4o-mini' } }, permissions: { currentValue: 'danger-full-access' } } } }],
@@ -177,7 +178,7 @@ function respond(method: string, args: any, raw: any = args): unknown {
       state.mcpRestarts.push(args.name)
       return null
     case 'pluginManager/inspect': return state.pluginAnswer
-    case 'pluginManager/installBundle': return { ...state.pluginAnswer, status: 'installed' }
+    case 'pluginManager/installBundle': return state.installAnswer
     case 'subagents/prompt': return { messageId: `m-${args.childSessionId}` }
     case 'subagents/interruptByUser': return { accepted: true }
     case 'goals/edit': {
@@ -877,9 +878,33 @@ test('plugins: an inspection is kept with its spec; an install reports the Host 
     const install = state.calls.findLast(call => call.method === 'pluginManager/installBundle')
     assert.equal(install?.args.spec, 'nuevo-paquete')
     assert.match(install?.args.options.requestId ?? '', /^[0-9a-f-]{36}$/)
-    assert.equal(app.snapshot().panel.note, 'instalación: installed')
+    assert.equal(app.snapshot().panel.note, 'instalación de nuevo-paquete: instalado')
+    assert.equal(app.snapshot().panel.pluginInspect?.status, 'instalado', 'the install replaces the inspection, so a second Enter inspects again')
+    assert.equal(app.snapshot().panel.pluginInspect?.phase, 'install')
   } finally {
+    state.installAnswer = { stage: 'install', target: 'nuevo', changed: true, application: 'applied', bundle: 'nuevo', version: '1.0.0' }
     state.pluginAnswer = { status: 'accepted', name: 'nuevo', version: '1.0.0' }
+    app.dispose()
+  }
+})
+
+test('plugins: a pending install script is named, and a retry sends exactly those names', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('plugins')
+    state.installAnswer = { stage: 'install', target: 'pkg', changed: false, application: 'failed', error: { code: 'operation-error' }, pendingBuilds: ['esbuild'] }
+    await app.installSpec('pkg')
+    assert.equal(app.snapshot().panel.pluginInspect?.status, 'pendiente de permiso')
+    assert.deepEqual(app.snapshot().panel.pluginInspect?.pendingBuilds, ['esbuild'])
+    state.installAnswer = { stage: 'install', target: 'pkg', changed: true, application: 'applied', bundle: 'pkg', version: '1.0.0' }
+    await app.installSpec('pkg', ['esbuild'])
+    const retry = state.calls.findLast(call => call.method === 'pluginManager/installBundle')
+    assert.deepEqual(retry?.args.options.approvedBuilds, ['esbuild'])
+    assert.equal(app.snapshot().panel.pluginInspect?.status, 'instalado')
+    assert.equal(app.snapshot().panel.pluginInspect?.pendingBuilds, undefined)
+  } finally {
+    state.installAnswer = { stage: 'install', target: 'nuevo', changed: true, application: 'applied', bundle: 'nuevo', version: '1.0.0' }
     app.dispose()
   }
 })

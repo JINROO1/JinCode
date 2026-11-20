@@ -151,7 +151,7 @@ controlador en `tests/controller.test.ts`.
 | 7f | Metas: editar el objetivo (`goals/edit`, con la revisión leída) | Hecho, probado en vivo |
 | 7h | Agentes: listar presets, seleccionar en una sesión vacía, sesión nueva con preset, ver la declaración (`agentPresets/*`) | Hecho, probado en vivo |
 | 7g | Subagentes: listar los hijos, enviar un mensaje (cola o dirigir), interrumpir (`subagents/*`) | Hecho; probado contra el Host con ids ausentes. Crear un subagente real no fue posible en el entorno de prueba |
-| 8 | Plugins (`pluginManager/*`): listar, activar y desactivar plugins y bundles, quitar un bundle (dos pulsaciones), inspeccionar e instalar | Hecho con pruebas (Host simulado). En vivo: listado y lectura verificados; activar, quitar e instalar no (ver abajo) |
+| 8 | Plugins (`pluginManager/*`): listar, activar y desactivar plugins y bundles, quitar un bundle (dos pulsaciones), inspeccionar e instalar | Hecho con pruebas (Host simulado). En vivo: listado, lectura e inspección de un paquete sin bundle verificados; activar, quitar e instalar con éxito no (ver abajo) |
 | 9 | MCP (`mcpManager/*`): estado en vivo de los servidores, sondeo y reinicio | Hecho, probado en vivo con un servidor MCP de prueba (stdio). Autorización OAuth y edición de `servers` desde Ajustes no se probaron en vivo |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
@@ -206,9 +206,21 @@ desactivar, quitar ni instalar. Motivos: el servidor de prueba dejó de arrancar
 launcher de `dsh` reescribió `profiles/web/package.json` añadiendo `dsh-acp-app` y terminó con
 «unknown option '--host'»), y el entorno no alcanza el registro de paquetes (`fetch failed` en
 `pluginManager/inspect`). Esas acciones quedan cubiertas por pruebas con un Host simulado
-(`tests/panel.test.ts`, `tests/controller.test.ts`, `tests/panel-view.test.ts`). Pendiente: el Host
-puede pedir permiso para los scripts de compilación de un paquete (`approvedBuilds`); la CLI aún no
-ofrece esa respuesta y muestra el estado que devuelve el Host tal cual.
+(`tests/panel.test.ts`, `tests/controller.test.ts`, `tests/panel-view.test.ts`).
+
+Corrección de la fase 8: el Host responde a `pluginManager/installBundle` con su resultado de cambio
+(`application`, `bundle`, `version`, `error.code`, `pendingBuilds`), no con un `status`. La CLI lo lee
+así (`src/app/plugin-install-model.ts`). Antes mostraba «desconocido» y dejaba la inspección en
+`accepted`. Ahora un fallo muestra «falló» con su motivo; una instalación correcta, «instalado», y la
+inspección se sustituye, así que un Enter más no reinstala. Si pnpm dejó scripts de instalación sin
+ejecutar (`pendingBuilds`), la línea los nombra y un Enter con el mismo texto los permite para este
+perfil y reinstala (`approvedBuilds`).
+
+Verificación en vivo de esa corrección: `pluginManager/installBundle` sobre un paquete local sin
+bundle devolvió `application:'failed'` con `error.code:'not-bundle'`, y el perfil quedó como estaba.
+La inspección de ese mismo paquete en el panel lo rechaza antes de instalar («declares no dsh.bundle»).
+El éxito de una instalación y la aprobación de scripts no se verificaron en vivo: el entorno de
+prueba no alcanza el registro de paquetes.
 
 Fase 9, verificación en vivo: con un servidor MCP de prueba (stdio, una herramienta `echo`) en
 Ajustes › mcp-manager, la sección MCP muestra «echo · conectado · 1 herramienta». Con un comando

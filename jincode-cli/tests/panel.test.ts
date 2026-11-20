@@ -108,7 +108,7 @@ const replies: Record<string, unknown> = {
   'pluginManager/setBundleEnabled': {},
   'pluginManager/removeBundle': {},
   'pluginManager/inspect': { status: 'accepted', name: 'extra', version: '0.2.0' },
-  'pluginManager/installBundle': { status: 'accepted', name: 'extra', version: '0.2.0' },
+  'pluginManager/installBundle': { stage: 'install', target: 'extra@0.2.0', changed: true, application: 'applied', bundle: 'extra', version: '0.2.0' },
   'subagents/prompt': { messageId: 'm-1' },
   'subagents/interruptByUser': { accepted: true },
   'goals/edit': { id: 'goal-1', revision: 5, objective: 'nuevo', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
@@ -295,7 +295,23 @@ test('plugins: an install carries a request identity that a later cancellation c
   assert.match(installed.requestId, /^[0-9a-f-]{36}$/)
   assert.equal(last().method, 'pluginManager/installBundle')
   assert.deepEqual(last().args, { spec: 'extra@0.2.0', options: { requestId: installed.requestId } })
-  assert.equal(installed.status, 'accepted')
+  assert.equal(installed.application, 'applied')
+  assert.equal(installed.name, 'extra')
+  assert.equal(installed.version, '0.2.0')
+})
+
+test('plugins: an approval retry sends the allowed scripts; a Host failure keeps its code and what pnpm left pending', async () => {
+  replies['pluginManager/installBundle'] = { stage: 'install', target: 'pkg', changed: false, application: 'failed', error: { code: 'not-bundle' }, registries: [null] }
+  const retry = await client.installSpec('pkg', ['esbuild'])
+  assert.deepEqual((last().args['options'] as { approvedBuilds?: unknown }).approvedBuilds, ['esbuild'])
+  assert.equal(retry.application, 'failed')
+  assert.equal(retry.code, 'not-bundle')
+  const pending = { stage: 'install', target: 'pkg', changed: false, application: 'failed', error: { code: 'operation-error' }, pendingBuilds: ['esbuild'] }
+  replies['pluginManager/installBundle'] = pending
+  const again = await client.installSpec('pkg')
+  assert.deepEqual(again.pendingBuilds, ['esbuild'])
+  assert.equal('approvedBuilds' in (last().args['options'] as object), false, 'no approval is sent unless the person gave one')
+  replies['pluginManager/installBundle'] = { stage: 'install', target: 'extra@0.2.0', changed: true, application: 'applied', bundle: 'extra', version: '0.2.0' }
 })
 
 test('mcp: a probe names the server and returns the Host result; a restart names the server', async () => {
