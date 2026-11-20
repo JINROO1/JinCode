@@ -56,7 +56,7 @@ test('settings take writable from the document and skip unnamed namespaces', () 
     ],
   })
   assert.equal(rows.length, 2)
-  assert.deepEqual(rows[0], { ns: 'agent', revision: 3, applies: 'next-turn', writable: true, value: { maxSteps: 40 } })
+  assert.deepEqual(rows[0], { ns: 'agent', revision: 3, applies: 'next-turn', writable: true, value: { maxSteps: 40 }, user: undefined, secrets: [] })
   assert.equal(rows[1]?.revision, 0, 'a missing revision reads as 0')
   assert.equal(rows[1]?.applies, 'restart')
 })

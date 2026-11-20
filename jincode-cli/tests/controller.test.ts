@@ -15,6 +15,7 @@ const state = {
   sessions: [{ sessionId: 's-1', updatedAt: 1000, running: false, blank: false, cwd: '/tmp', projections: { values: { title: 'Primera', modelSelection: { next: { provider: 'jincode', model: 'gpt-4o-mini' } }, permissions: { currentValue: 'danger-full-access' } } } }],
   queue: [] as Array<{ id: string; placement: string; content: unknown }>,
   goal: null as null | { id: string; revision: number; objective: string; phase: string; roundsStarted: number; maxGoalRounds: number },
+  settings: { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' } as Record<string, unknown>, user: { maxSteps: 40 } as Record<string, unknown> | undefined },
 }
 
 let server: Server
@@ -53,7 +54,21 @@ function respond(method: string, args: any): unknown {
     case 'permissionPresets/set':
       state.sessions[0] = { ...state.sessions[0]!, projections: { values: { ...state.sessions[0]!.projections.values, permissions: { currentValue: args.preset } } } } as any
       return { currentValue: args.preset }
-    case 'settings/describe': return { writable: false, namespaces: [{ ns: 'agent', revision: 2, applies: 'next-turn', value: { maxSteps: 40 } }] }
+    case 'settings/describe': return { writable: state.settings.writable, namespaces: [{ ns: 'agent', revision: state.settings.revision, applies: 'next-turn', value: state.settings.value, user: state.settings.user, secrets: [] }] }
+    case 'settings/mutate': {
+      if (args.expectedRevision !== state.settings.revision) throw new Error('settings revision conflict: the entry changed')
+      const user = { ...(state.settings.user ?? {}) } as Record<string, unknown>
+      for (const op of args.ops) {
+        if (op.op === 'set') user[op.path[0]] = op.value
+        else delete user[op.path[0]]
+      }
+      state.settings = { ...state.settings, revision: state.settings.revision + 1, user, value: { ...state.settings.value, ...user } }
+      return { ns: 'agent', revision: state.settings.revision }
+    }
+    case 'settings/replace':
+      if (args.expectedRevision !== state.settings.revision) throw new Error('settings revision conflict: the entry changed')
+      state.settings = { ...state.settings, revision: state.settings.revision + 1, user: args.section, value: { ...state.settings.value, ...args.section } }
+      return { ns: 'agent', revision: state.settings.revision }
     case 'goals/get': return state.goal ?? undefined
     case 'goals/create':
       state.goal = { id: 'goal-1', revision: 1, objective: args.objective, phase: 'active', roundsStarted: 0, maxGoalRounds: 8 }
@@ -322,6 +337,57 @@ test('setPreset applies the preset and the Session reports it afterwards', async
     assert.equal(app.snapshot().sessions.find(item => item.sessionId === 's-1')?.permission, 'read-only')
   } finally {
     state.sessions[0] = { ...state.sessions[0]!, projections: { values: { ...state.sessions[0]!.projections.values, permissions: { currentValue: 'danger-full-access' } } } } as any
+    app.dispose()
+  }
+})
+
+test('settings: a field is written with the revision read, then the section reloads', async () => {
+  state.settings = { writable: true, revision: 2, value: { maxSteps: 40, label: 'a' }, user: { maxSteps: 40 } }
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.setSection('settings')
+    await app.settingAction('agent', { kind: 'set', key: 'maxSteps', value: 50 })
+    const write = state.calls.findLast(call => call.method === 'settings/mutate')
+    assert.deepEqual(write?.args, { ns: 'agent', ops: [{ op: 'set', path: ['maxSteps'], value: 50 }], expectedRevision: 2 })
+    assert.equal(app.snapshot().panel.settings?.[0]?.revision, 3, 'the panel reads the new revision back')
+    assert.equal(app.snapshot().panel.note, 'agent.maxSteps guardado')
+    await app.settingAction('agent', { kind: 'unset', key: 'maxSteps' })
+    assert.deepEqual(state.calls.findLast(call => call.method === 'settings/mutate')?.args.ops, [{ op: 'unset', path: ['maxSteps'] }])
+  } finally {
+    state.settings = { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' }, user: { maxSteps: 40 } }
+    app.dispose()
+  }
+})
+
+test('settings: a stale revision is refused by the Host and shown as an error', async () => {
+  state.settings = { writable: true, revision: 7, value: { maxSteps: 40 }, user: {} }
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.setSection('settings')
+    state.settings = { ...state.settings, revision: 8 }
+    await app.settingAction('agent', { kind: 'set', key: 'maxSteps', value: 9 })
+    assert.match(app.snapshot().error ?? '', /revision conflict/)
+    assert.equal(state.calls.filter(call => call.method === 'settings/mutate').at(-1)?.args.expectedRevision, 7)
+  } finally {
+    state.settings = { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' }, user: { maxSteps: 40 } }
+    app.dispose()
+  }
+})
+
+test('settings: a read-only profile sends nothing and says so; a replace is refused when the section has secrets', async () => {
+  state.settings = { writable: false, revision: 2, value: { maxSteps: 40 }, user: {} }
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.setSection('settings')
+    const before = state.calls.length
+    await app.settingAction('agent', { kind: 'set', key: 'maxSteps', value: 9 })
+    assert.equal(state.calls.slice(before).some(call => call.method.startsWith('settings/')), false)
+    assert.match(app.snapshot().panel.note ?? '', /solo lectura/)
+  } finally {
+    state.settings = { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' }, user: { maxSteps: 40 } }
     app.dispose()
   }
 })

@@ -43,7 +43,7 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 |---|---|
 | Cola | ↑↓ eligen un mensaje · `s` lo dirige al turno en curso · `e` lo edita (Enter guarda, Esc cancela) · `x` lo quita |
 | Permisos | Enter aplica el preset. `danger-full-access` pide un segundo Enter porque no tiene confinamiento; Esc cancela |
-| Ajustes | ↑↓ eligen un espacio de nombres y muestran su valor. Solo lectura |
+| Ajustes | ↑↓ eligen un campo (agrupado por espacio de nombres). Enter edita el valor; Enter guarda, Esc cancela. `u` quita el valor propio (✎). `j` edita la sección entera en JSON (no disponible si tiene secretos). Con el perfil de solo lectura no se escribe nada |
 | Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío) |
 | Programaciones | ↑↓ listan las tareas programadas. Solo lectura |
 | Habilidades | ↑↓ listan las habilidades de la sesión con su descripción |
@@ -134,7 +134,8 @@ controlador en `tests/controller.test.ts`.
 | 5 | Cola (dirigir, editar, quitar), permisos, esfuerzo de razonamiento | Hecho, probado en vivo |
 | 5b | Panel: ajustes (solo lectura), metas (crear, pausar, reanudar, completar, eliminar), programaciones y habilidades (solo lectura) | Hecho, probado en vivo |
 | 6 | Preguntas del agente (`userQuestions`: respuesta por `$events`), adjuntos (`fileUploads/upload`, imagen en el prompt), aprobaciones (`approval/request`) | Hecho en vivo: respuesta a pregunta, aprobar una vez, rechazar. Pendiente en vivo: espera temporizada (`userQuestions/attachWait`) y adjuntos |
-| 7 | Ajustes editables (`settings/update`, `settings/replace`); espacio de trabajo (`workspace/*`: crear, renombrar, fijar, archivar; `workspaceFiles/*`); terminal (`terminal/*`) | Pendiente |
+| 7a | Ajustes editables (`settings/mutate` por campo con la revisión leída, `settings/replace` por sección sin secretos) | Hecho, probado en vivo |
+| 7b | Espacio de trabajo (`workspace/*`: crear, renombrar, fijar, archivar; `workspaceFiles/*`); terminal (`terminal/*`) | Pendiente |
 | 8 | Programaciones (`schedule/create`, `edit`, `run`, `history`); metas editar (`goals/edit`); subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
@@ -142,6 +143,10 @@ responder), aprobación `y` (la herramienta se ejecuta y el turno termina con «
 rechazo `n` (la herramienta queda denegada). Aprobaciones y preguntas requieren el servidor
 con `DSH_PERMISSION_MODE=read-only` para que `bash` pida aprobación, y `JINCODE_BASE_URL`
 apuntando al modelo de prueba; sin esa variable el turno falla con «Connection error.».
+
+Fase 7a, verificación en vivo: editar un campo (8 → 9) con revisión 1 → 2 y quitarlo con `u`
+(vuelve a 8, sin ✎); `settings/replace` con la revisión actual se acepta y con una revisión
+obsoleta el Host responde «changed since it was read».
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

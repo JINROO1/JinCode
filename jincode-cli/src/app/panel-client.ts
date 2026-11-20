@@ -18,14 +18,27 @@ export interface PresetView {
   readonly defaultPreset: string | undefined
 }
 
-/** One Host settings namespace, read-only. */
+/** One secret slot of a namespace: its path from the section root and whether it holds a value. */
+export interface SecretSlot {
+  readonly path: readonly string[]
+  readonly set: boolean
+}
+
+/** One Host settings namespace: the resolved value, the user section and its secret slots. */
 export interface SettingsRow {
   readonly ns: string
   readonly revision: number
   readonly applies: string
   readonly writable: boolean
   readonly value: unknown
+  readonly user: Record<string, unknown> | undefined
+  readonly secrets: readonly SecretSlot[]
 }
+
+/** One edit of a namespace's user section, applied in order by `settings/mutate`. */
+export type SettingOp =
+  | { readonly op: 'set'; readonly path: readonly string[]; readonly value: unknown }
+  | { readonly op: 'unset'; readonly path: readonly string[] }
 
 /** A goal as the Host reports it. */
 export interface GoalView {
@@ -95,6 +108,12 @@ export function normalizeSettings(value: unknown): SettingsRow[] {
       applies: typeof item['applies'] === 'string' ? item['applies'] : 'unknown',
       writable: value['writable'] === true,
       value: item['value'],
+      user: isRecord(item['user']) ? item['user'] : undefined,
+      secrets: Array.isArray(item['secrets'])
+        ? item['secrets'].flatMap(slot => isRecord(slot) && Array.isArray(slot['path']) && slot['path'].every(part => typeof part === 'string')
+          ? [{ path: slot['path'] as string[], set: slot['set'] === true }]
+          : [])
+        : [],
     })
   }
   return rows
@@ -188,6 +207,27 @@ export class PanelClient {
   /** @returns the settings namespaces. */
   async settings(): Promise<SettingsRow[]> {
     return normalizeSettings(await call(this.connection, 'settings/describe', {}))
+  }
+
+  /**
+   * Apply path edits to one namespace's user section. The Host refuses the write
+   * when the revision read is stale, so the caller reloads after each change.
+   * @param ns - the namespace.
+   * @param ops - the edits, in order.
+   * @param expectedRevision - the revision the caller read.
+   */
+  async writeSetting(ns: string, ops: readonly SettingOp[], expectedRevision: number): Promise<void> {
+    await call(this.connection, 'settings/mutate', { ns, ops, expectedRevision })
+  }
+
+  /**
+   * Replace the whole user section of one namespace.
+   * @param ns - the namespace.
+   * @param section - the complete new user section.
+   * @param expectedRevision - the revision the caller read.
+   */
+  async replaceSection(ns: string, section: Record<string, unknown>, expectedRevision: number): Promise<void> {
+    await call(this.connection, 'settings/replace', { ns, section, expectedRevision })
   }
 
   /** @returns the goal of a Session, or undefined. */

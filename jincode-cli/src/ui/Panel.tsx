@@ -12,6 +12,7 @@ import { packHints, wrapText } from './layout.ts'
 import { type Buffer, textOf } from './composer.ts'
 import { type StyledLine, type Tone } from './format.ts'
 import { palette } from './theme.ts'
+import { fieldSummary, settingsFields } from '../app/settings-model.ts'
 
 /** Human labels for the section tabs. */
 export const SECTION_LABEL: Record<PanelSection, string> = {
@@ -34,9 +35,6 @@ export const PHASE_LABEL: Record<string, string> = {
 
 /** Presets whose effect needs an explicit confirmation before it applies. */
 export const CONFIRMED_PRESETS: readonly string[] = ['danger-full-access']
-
-/** Lines of a settings value shown before the rest is summarised. */
-export const SETTINGS_VALUE_LINES = 14
 
 /** Props the panel needs from the screen. */
 export interface PanelProps {
@@ -69,7 +67,7 @@ export function panelRowCount(state: AppState): number {
   switch (panel.section) {
     case 'queue': return panel.queue?.length ?? 0
     case 'permissions': return panel.presets?.options.length ?? 0
-    case 'settings': return panel.settings?.length ?? 0
+    case 'settings': return panel.settings === undefined ? 0 : settingsFields(panel.settings).length
     case 'schedule': return panel.schedules?.length ?? 0
     case 'skills': return panel.skills?.length ?? 0
     case 'goals': return 0
@@ -208,19 +206,35 @@ export function sectionView(props: PanelProps): SectionView {
     }
     case 'settings': {
       if (panel.settings === undefined) return { body: [{ text: 'Cargando los ajustes…', tone: 'muted' }], focus, footer }
-      panel.settings.forEach((item, index) => {
-        row(`${index === cursor ? '›' : ' '} ${item.ns} · rev ${item.revision} · ${item.applies}`, index === cursor)
-      })
-      const selected = panel.settings[cursor]
-      if (selected !== undefined) {
-        const value = JSON.stringify(selected.value, null, 2) ?? 'null'
-        const lines = wrapText(value, Math.max(8, width - 2))
-        for (const line of lines.slice(0, SETTINGS_VALUE_LINES)) body.push({ text: `  ${line}`, tone: 'muted' })
-        if (lines.length > SETTINGS_VALUE_LINES) {
-          for (const line of wrapText(`  (${lines.length - SETTINGS_VALUE_LINES} líneas más)`, width)) body.push({ text: line, tone: 'faint' })
-        }
+      const fields = settingsFields(panel.settings)
+      if (fields.length === 0) {
+        add('Este perfil no tiene ajustes.', 'muted')
+        return { body, focus, footer }
       }
-      hint('Solo lectura: la edición llega en una fase posterior.')
+      let group: string | undefined
+      fields.forEach((item, index) => {
+        if (item.ns !== group) {
+          group = item.ns
+          const meta = panel.settings?.find(entry => entry.ns === item.ns)
+          add(`${item.ns} · rev ${item.revision} · ${meta?.applies ?? ''}`, 'accent', { bold: true })
+        }
+        const active = index === cursor
+        const mark = item.overridden ? ' ✎' : ''
+        row(`${active ? '›' : ' '} ${item.key}${mark}: ${fieldSummary(item)}`, active)
+      })
+      const selected = fields[cursor]
+      if (selected !== undefined && editing !== undefined && editing.endsWith('\u0000*')) {
+        notice(`Editar la sección ${selected.ns} (JSON) · Enter guarda · Esc cancela`, 'accent')
+        notice(`${textOf(field)}▌`, 'text')
+      } else if (selected !== undefined && editing !== undefined) {
+        notice(`Editar ${selected.key} · Enter guarda · Esc cancela`, 'accent')
+        notice(selected.secret ? `${'•'.repeat(textOf(field).length)}▌` : `${textOf(field)}▌`, 'text')
+      } else if (selected !== undefined && !selected.writable) {
+        hint('Solo lectura en este perfil')
+      } else if (selected !== undefined) {
+        const replaceable = panel.settings.find(entry => entry.ns === selected.ns)
+        hint(`Enter editar · u quitar el valor propio (✎) · ${replaceable?.secrets.length === 0 ? 'j editar la sección completa' : 'la sección tiene secretos: no se edita entera'}`)
+      }
       return { body, focus, footer }
     }
     case 'goals': {

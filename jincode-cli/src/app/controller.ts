@@ -28,6 +28,7 @@ import type {
   PendingQuestion,
 } from './interaction-rules.ts'
 import { emptyTranscript, type Transcript } from '../transcript/reducer.ts'
+import { canReplaceSection } from './settings-model.ts'
 import {
   PanelClient,
   type GoalView,
@@ -35,6 +36,7 @@ import {
   type QueueRow,
   type ScheduleRow,
   type SettingsRow,
+  type SettingOp,
   type SkillRow,
 } from './panel-client.ts'
 
@@ -45,6 +47,12 @@ export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'sear
 const POLL_MS = 2500
 
 /** Sections of the panel, in the order Tab cycles through them. */
+/** One change to a namespace from the settings section. */
+export type SettingAction =
+  | { readonly kind: 'set'; readonly key: string; readonly value: unknown }
+  | { readonly kind: 'unset'; readonly key: string }
+  | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
+
 export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'goals', 'schedule', 'skills'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
@@ -572,6 +580,46 @@ export class AppController {
       await this.panelClient.setPreset(sessionId, preset)
       await this.refreshSessions()
       this.patchPanel({ note: `permisos: ${preset}` })
+    })
+  }
+
+  /**
+   * Show a message in the panel's note line, for input the panel refused before any call.
+   * @param note - the message.
+   */
+  notePanel(note: string): void {
+    this.patchPanel({ note })
+  }
+
+  /**
+   * Change one field of a namespace, remove its override, or replace the whole
+   * user section. Each write carries the revision the panel read, so a concurrent
+   * change is refused by the Host and the panel reloads instead of overwriting it.
+   * @param ns - the namespace.
+   * @param action - the change to apply.
+   */
+  async settingAction(ns: string, action: SettingAction): Promise<void> {
+    const row = this.state.panel.settings?.find(item => item.ns === ns)
+    if (row === undefined) return
+    if (!row.writable) {
+      this.patchPanel({ note: 'los ajustes son de solo lectura en este perfil' })
+      return
+    }
+    await this.attempt(async () => {
+      if (action.kind === 'replace') {
+        if (!canReplaceSection(row)) {
+          this.patchPanel({ note: 'esta sección tiene secretos: edítala campo a campo' })
+          return
+        }
+        await this.panelClient.replaceSection(ns, action.section, row.revision)
+      } else {
+        const op: SettingOp = action.kind === 'set'
+          ? { op: 'set', path: [action.key], value: action.value }
+          : { op: 'unset', path: [action.key] }
+        await this.panelClient.writeSetting(ns, [op], row.revision)
+      }
+      this.patchPanel({ note: action.kind === 'replace' ? `${ns}: sección guardada` : action.kind === 'set' ? `${ns}.${action.key} guardado` : `${ns}.${action.key}: vuelve al valor base` })
+      await this.loadSection('settings')
     })
   }
 

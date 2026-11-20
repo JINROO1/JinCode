@@ -6,6 +6,29 @@ import { emptyBuffer, bufferOf, textOf, type Buffer } from './composer.ts'
 import { editField, type KeyLike } from './keys.ts'
 import { panelRowCount, panelSelection, CONFIRMED_PRESETS } from './Panel.tsx'
 import { PANEL_SECTIONS, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
+import {
+  canReplaceSection,
+  fieldEditKey,
+  fieldText,
+  parseFieldText,
+  sectionEditKey,
+  settingsFields,
+} from '../app/settings-model.ts'
+
+/**
+ * Read the JSON of a whole section. It must be one object; the Host rejects anything else.
+ * @param text - the typed text.
+ * @returns the object, or the reason it was refused.
+ */
+function parseSectionText(text: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  try {
+    const value = JSON.parse(text) as unknown
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) return { ok: true, value: value as Record<string, unknown> }
+    return { ok: false, error: 'la sección debe ser un objeto JSON' }
+  } catch {
+    return { ok: false, error: 'el JSON no es válido' }
+  }
+}
 
 export interface PanelKeys {
   input: string
@@ -90,6 +113,72 @@ export function handlePanelKey(keys: PanelKeys): void {
     }
     setPendingPreset(undefined)
     void controller.setPreset(preset)
+    return
+  }
+
+  if (section === 'settings') {
+    const rows = state.panel.settings ?? []
+    const fields = settingsFields(rows)
+    if (editingItem !== undefined) {
+      if (!key.return) {
+        setField(editField(field, input, key))
+        return
+      }
+      const [ns = '', part = ''] = editingItem.split('\u0000')
+      const text = textOf(field)
+      if (part === '*') {
+        const row = rows.find(item => item.ns === ns)
+        if (row === undefined || !canReplaceSection(row)) return
+        const parsed = parseSectionText(text)
+        if (!parsed.ok) {
+          controller.notePanel(parsed.error)
+          return
+        }
+        setEditingItem(undefined)
+        setField(emptyBuffer())
+        void controller.settingAction(ns, { kind: 'replace', section: parsed.value })
+        return
+      }
+      const target = fields.find(item => item.ns === ns && item.key === part)
+      if (target === undefined) {
+        setEditingItem(undefined)
+        return
+      }
+      const parsed = parseFieldText(text, target.value, target.secret)
+      if (!parsed.ok) {
+        controller.notePanel(parsed.error)
+        return
+      }
+      setEditingItem(undefined)
+      setField(emptyBuffer())
+      void controller.settingAction(ns, { kind: 'set', key: target.key, value: parsed.value })
+      return
+    }
+    const selected = fields[cursor]
+    if (selected === undefined) return
+    if (input === 'u') {
+      if (selected.writable && selected.overridden) void controller.settingAction(selected.ns, { kind: 'unset', key: selected.key })
+      return
+    }
+    if (input === 'j') {
+      const row = rows.find(item => item.ns === selected.ns)
+      if (row === undefined) return
+      if (!canReplaceSection(row)) {
+        controller.notePanel('esta sección tiene secretos: edítala campo a campo')
+        return
+      }
+      setEditingItem(sectionEditKey(row.ns))
+      setField(bufferOf(JSON.stringify(row.user ?? {})))
+      return
+    }
+    if (key.return) {
+      if (!selected.writable) {
+        controller.notePanel('los ajustes son de solo lectura en este perfil')
+        return
+      }
+      setEditingItem(fieldEditKey(selected.ns, selected.key))
+      setField(bufferOf(selected.secret ? '' : fieldText(selected.value)))
+    }
     return
   }
 

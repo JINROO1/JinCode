@@ -2,11 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import React from 'react'
 import { render } from 'ink-testing-library'
-import { Panel, bodyWindow, panelRowCount, panelSelection, SETTINGS_VALUE_LINES } from '../src/ui/Panel.tsx'
+import { Panel, bodyWindow, panelRowCount, panelSelection } from '../src/ui/Panel.tsx'
 import { handlePanelKey, type PanelKeys } from '../src/ui/panel-keys.ts'
 import { cellWidth } from '../src/ui/layout.ts'
 import { emptyBuffer, bufferOf, textOf } from '../src/ui/composer.ts'
 import type { AppController, AppState, PanelState } from '../src/app/controller.ts'
+import type { SettingsRow } from '../src/app/panel-client.ts'
 
 // A snapshot with only the fields the panel reads; the rest is never touched.
 function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): AppState {
@@ -63,7 +64,7 @@ test('every line of every section fits the width it was laid out for', () => {
   const sections: Array<Partial<PanelState>> = [
     { section: 'queue', queue: [{ id: 'q', placement: 'queued', text: long }] },
     { section: 'permissions', presets: { options: ['read-only', 'danger-full-access'], defaultPreset: 'danger-full-access' } },
-    { section: 'settings', settings: [{ ns: 'agent', revision: 1, applies: 'next-turn', writable: false, value: { long } }] },
+    { section: 'settings', settings: [{ ns: 'agent', revision: 1, applies: 'next-turn', writable: false, value: { long }, user: undefined, secrets: [] }] },
     { section: 'goals', goal: { id: 'g', revision: 1, objective: long, phase: 'active', roundsStarted: 1, maxGoalRounds: 8 } },
     { section: 'schedule', schedules: [{ id: 's', title: long, status: 'active' }] },
     { section: 'skills', skills: [{ name: 'pdf', description: long }] },
@@ -135,11 +136,10 @@ test('danger-full-access asks for a second Enter with a warning that names the r
   unmount()
 })
 
-test('settings show the value under the cursor and cap its height', () => {
-  const big = Array.from({ length: 40 }, (_, i) => `clave${i}: ${i}`)
-  const value = Object.fromEntries(big.map((line, i) => [`k${i}`, line]))
+test('settings list one row per field, cap long values and say when the profile is read-only', () => {
+  const long = 'x'.repeat(400)
   const { lastFrame, unmount } = render(React.createElement(Panel, {
-    state: stateWith({ section: 'settings', settings: [{ ns: 'agent', revision: 2, applies: 'next-turn', writable: false, value }] }),
+    state: stateWith({ section: 'settings', settings: [{ ns: 'agent', revision: 2, applies: 'live', writable: false, value: { long, flag: true }, user: undefined, secrets: [] }] }),
     width: 70,
     height: 60,
     cursor: 0,
@@ -148,9 +148,10 @@ test('settings show the value under the cursor and cap its height', () => {
     pendingPreset: undefined,
   }))
   const frame = lastFrame() ?? ''
+  assert.match(frame, /agent · rev 2/)
+  assert.match(frame, /flag: true/)
+  assert.match(frame, /… \(\d+ caracteres\)/)
   assert.match(frame, /solo lectura/i)
-  assert.match(frame, /líneas más/)
-  assert.ok(SETTINGS_VALUE_LINES > 0)
   unmount()
 })
 
@@ -270,12 +271,12 @@ test('goals: while the field has text, the goal shortcuts stay quiet', () => {
 
 test('settings, schedules and skills only move the cursor; they never send a change', () => {
   const { controller, calls } = fakeController()
-  const state = stateWith({ section: 'settings', settings: [{ ns: 'a', revision: 1, applies: 'x', writable: false, value: null }, { ns: 'b', revision: 1, applies: 'x', writable: false, value: null }] })
+  const state = stateWith({ section: 'settings', settings: [{ ns: 'a', revision: 1, applies: 'x', writable: false, value: { on: true }, user: undefined, secrets: [] }, { ns: 'b', revision: 1, applies: 'x', writable: false, value: { on: false }, user: undefined, secrets: [] }] })
   let cursor = 0
   handlePanelKey(keysFor(state, controller, { key: { downArrow: true }, setCursor: value => { cursor = typeof value === 'function' ? value(cursor) : value } }))
   handlePanelKey(keysFor(state, controller, { key: { return: true, downArrow: false }, input: 'x' }))
   assert.equal(cursor, 1)
-  assert.deepEqual(calls, [])
+  assert.deepEqual(calls.filter(call => call.startsWith('settingAction') || call.startsWith('writeSetting')), [], 'a read-only profile never sends a change')
 })
 
 test('Ctrl-free typing in the queue section never reaches the composer by accident', () => {
@@ -296,7 +297,7 @@ test('the body window keeps the cursor row in view and counts what is hidden', (
 })
 
 test('a long settings list scrolls to the cursor and says how many lines are above and below', () => {
-  const settings = Array.from({ length: 30 }, (_, i) => ({ ns: `ns-${i}`, revision: 1, applies: 'live', writable: false, value: null }))
+  const settings = Array.from({ length: 30 }, (_, i) => ({ ns: `ns-${i}`, revision: 1, applies: 'live', writable: false, value: { x: null }, user: undefined, secrets: [] }))
   const { lastFrame, unmount } = render(React.createElement(Panel, {
     state: stateWith({ section: 'settings', settings }),
     width: 60,
@@ -311,4 +312,91 @@ test('a long settings list scrolls to the cursor and says how many lines are abo
   assert.match(frame, /arriba/)
   assert.match(frame, /abajo/)
   unmount()
+})
+
+/** A keyboard session over the settings section: each press applies to the state the last press left. */
+function settingsSession(settings: SettingsRow[], controller: AppController) {
+  const state = stateWith({ section: 'settings', settings })
+  const store = { field: emptyBuffer(), editing: undefined as string | undefined, cursor: 0, notes: [] as string[] }
+  const press = (input: string, key: PanelKeys['key'] = {}): void => {
+    handlePanelKey({
+      input,
+      key,
+      state,
+      controller,
+      field: store.field,
+      setField: value => { store.field = value },
+      cursor: store.cursor,
+      setCursor: value => { store.cursor = typeof value === 'function' ? value(store.cursor) : value },
+      pendingPreset: undefined,
+      setPendingPreset: () => {},
+      editingItem: store.editing,
+      setEditingItem: value => { store.editing = value },
+    })
+  }
+  return { press, store }
+}
+
+const SETTINGS_ROW: SettingsRow = { ns: 'agent', revision: 4, applies: 'live', writable: true, value: { maxSteps: 40, label: 'a' }, user: { maxSteps: 40 }, secrets: [] }
+
+test('settings: Enter edits a field; a typed number is saved with the revision read', () => {
+  const { controller, calls } = fakeController()
+  const session = settingsSession([SETTINGS_ROW], controller)
+  session.press('', { return: true })
+  assert.equal(session.store.editing, 'agent\u0000maxSteps')
+  assert.equal(textOf(session.store.field), '40')
+  session.press('', { backspace: true })
+  session.press('', { backspace: true })
+  session.press('5')
+  session.press('0')
+  session.press('', { return: true })
+  assert.equal(session.store.editing, undefined)
+  assert.deepEqual(calls.filter(call => call.startsWith('settingAction')), ['settingAction "agent" {"kind":"set","key":"maxSteps","value":50}'])
+})
+
+test('settings: a value the type does not allow stays in edit with a note, and sends nothing', () => {
+  const { controller, calls } = fakeController()
+  const session = settingsSession([SETTINGS_ROW], controller)
+  session.press('', { return: true })
+  session.press('', { backspace: true })
+  session.press('', { backspace: true })
+  session.press('x')
+  session.press('', { return: true })
+  assert.equal(session.store.editing, 'agent\u0000maxSteps', 'the edit stays open')
+  assert.ok(calls.some(call => call.startsWith('notePanel') && call.includes('número')))
+  assert.equal(calls.some(call => call.startsWith('settingAction')), false)
+})
+
+test('settings: u removes only an override the user set; the key is ignored elsewhere', () => {
+  const { controller, calls } = fakeController()
+  const session = settingsSession([SETTINGS_ROW], controller)
+  session.press('u')
+  assert.deepEqual(calls.filter(call => call.startsWith('settingAction')), ['settingAction "agent" {"kind":"unset","key":"maxSteps"}'])
+  session.press('', { downArrow: true })
+  session.press('u')
+  assert.equal(calls.filter(call => call.startsWith('settingAction')).length, 1, 'label has no override to remove')
+})
+
+test('settings: a read-only namespace refuses edits and whole-section replace', () => {
+  const { controller, calls } = fakeController()
+  const session = settingsSession([{ ...SETTINGS_ROW, writable: false }], controller)
+  session.press('', { return: true })
+  session.press('j')
+  assert.equal(session.store.editing, undefined)
+  assert.ok(calls.some(call => call.startsWith('notePanel') && call.includes('solo lectura')))
+})
+
+test('settings: j edits the whole section as JSON, and a section with secrets is refused', () => {
+  const { controller, calls } = fakeController()
+  const session = settingsSession([SETTINGS_ROW], controller)
+  session.press('j')
+  assert.equal(session.store.editing, 'agent\u0000*')
+  assert.equal(textOf(session.store.field), '{"maxSteps":40}')
+  session.press('', { return: true })
+  assert.deepEqual(calls.filter(call => call.startsWith('settingAction')), ['settingAction "agent" {"kind":"replace","section":{"maxSteps":40}}'])
+
+  const secretive = settingsSession([{ ...SETTINGS_ROW, secrets: [{ path: ['providers', 'x', 'apiKey'], set: true }] }], controller)
+  secretive.press('j')
+  assert.equal(secretive.store.editing, undefined)
+  assert.ok(calls.some(call => call.startsWith('notePanel') && call.includes('secretos')))
 })
