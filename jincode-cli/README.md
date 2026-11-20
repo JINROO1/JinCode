@@ -229,5 +229,13 @@ inexistente, «se agotaron los reintentos» y el error del sistema. `p` sobre es
 correcto (con `echo` como herramienta) se comprobó contra el Host. El stream se actualiza sin
 recargar: un cambio de estado llega a la lista.
 
+Verificación de turnos en vivo (sin clave de proveedor real): en el servidor de prueba se declaró una
+ruta OpenAI-compatible `jincode` (`llm-pi-ai`, `providers.jincode`) apuntando al simulador local con una
+clave de marcador de posición. Con ella: el selector de modelos (Ctrl+O) lista `gpt-4o-mini`; un turno
+completo llega a «listo» con su respuesta en streaming. Con un turno en curso, cada mensaje enviado se
+dirige a ese turno (aparece en la transcripción y el modelo responde), y la cola queda vacía. El
+simulador no emite razonamiento, así que el esfuerzo (Tab en el selector) y las preguntas con tiempo
+no se pueden comprobar con él.
+
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.
