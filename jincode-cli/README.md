@@ -48,6 +48,7 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Programaciones | ↑↓ listan todas las tareas, con su estado (activa, pausada, terminada, ejecutando) y su temporización. `n` crea; Enter o `e` edita; con el formulario abierto, ↑↓ cambian de campo, Enter guarda y Esc cancela. Temporizaciones: `after 600`, `every 3600`, `at 2026-12-01 09:30 Europe/Madrid`, `daily 09:00 UTC`, `weekly 09:00 UTC 1,3,5`, `cron 0 9 * * 1 UTC`, `rrule DTSTART:…\|RRULE:…`. Destinos: «sesión actual», «nueva sesión», «nueva sesión una vez». `p` pausa o reanuda; `r` ejecuta ahora; `h` lee las entregas; `x` elimina (dos veces); `c` quita las terminadas (dos veces). Una tarea terminada no se pausa |
 | Agentes | Lista los presets del Host, con el predeterminado marcado. Enter selecciona el preset en la sesión activa (`agentPresets/select`), solo si no tiene turnos: el Host lo rechaza si ya empezó. `n` abre una sesión nueva con ese preset (`session/create`). `v` muestra u oculta su declaración en YAML (`agentPresets/read`, solo lectura) |
 | Subagentes | Las sesiones hijas de la sesión activa, con «en curso» o «inactivo». Enter abre el subagente; con texto escrito, Enter lo envía (`subagents/prompt`, entrega en cola, o dirigida con Ctrl+D). Ctrl+X lo interrumpe (`subagents/interruptByUser`). Solo texto: las imágenes no se envían desde esta sección |
+| Plugins | Lista los bundles del perfil (primero) y los plugins del cargador, con su estado y el motivo cuando son de solo lectura (`pluginManager/listBundles`, `listPlugins`). Con el campo vacío, Enter activa o desactiva la fila (`setBundleEnabled`, `setPluginEnabled`); las filas de solo lectura no se envían. Escribe un paquete (nombre, `nombre@versión`, ruta o dirección git) y Enter lo inspecciona (`pluginManager/inspect`); si el Host lo acepta, otro Enter con el mismo texto lo instala (`installBundle`, con identidad de petición). Ctrl+X quita un bundle que el perfil permite quitar, tras pulsarlo dos veces (`removeBundle`) |
 | Espacios | Lista en vivo (stream `workspace/follow`): cada espacio con sus sesiones, después «Sin espacio» y «Archivadas». `n` crea un espacio con la ruta escrita (vacío = espacio predeterminado). En un espacio: `r` renombra, `x` lo quita (dos veces; sus archivos y sesiones se conservan), `[` `]` lo suben o bajan. En una sesión: `p` fija o desfija, `a` archiva o restaura (una sesión con turno en curso no se archiva), `[` `]` la mueven dentro de su espacio |
 | Archivos | Explora la carpeta raíz del espacio de la sesión activa (`workspaceFiles/list`). Enter abre una carpeta o un archivo (en páginas de 40 líneas, `[` `]` pasan página); Backspace sube, o cierra la página o la búsqueda. `/` busca por nombre (`workspaceFiles/search`); `h` incluye los ocultos en las búsquedas; `r` recarga. Si el Host corta la lista, se avisa |
 | Terminal | Lista las terminales de la sesión activa (`terminal/watch`, en vivo). Enter la abre a pantalla completa; `n` elige shell (`terminal/shells`) y la crea en la carpeta de la sesión; `r` renombra; `x` la cierra (`terminal/close`). Con «terminó (código N)» la terminal ya no corre; Enter sigue mostrando su última pantalla |
@@ -149,7 +150,8 @@ controlador en `tests/controller.test.ts`.
 | 7f | Metas: editar el objetivo (`goals/edit`, con la revisión leída) | Hecho, probado en vivo |
 | 7h | Agentes: listar presets, seleccionar en una sesión vacía, sesión nueva con preset, ver la declaración (`agentPresets/*`) | Hecho, probado en vivo |
 | 7g | Subagentes: listar los hijos, enviar un mensaje (cola o dirigir), interrumpir (`subagents/*`) | Hecho; probado contra el Host con ids ausentes. Crear un subagente real no fue posible en el entorno de prueba |
-| 8 | Plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
+| 8 | Plugins (`pluginManager/*`): listar, activar y desactivar plugins y bundles, quitar un bundle (dos pulsaciones), inspeccionar e instalar | Hecho con pruebas (Host simulado). En vivo: listado y lectura verificados; activar, quitar e instalar no (ver abajo) |
+| 9 | MCP (`mcpManager/*`) | Pendiente |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
 responder), aprobación `y` (la herramienta se ejecuta y el turno termina con «completado») y
@@ -195,6 +197,17 @@ Fase 7h, verificación en vivo: la sección «Agentes» lista `standard · por d
 «agente seleccionado: ptc». Contra el Host, `agentPresets/select` en una sesión con historial responde
 «This session has already started», y con un preset desconocido «Unknown agent preset». La CLI no envía
 la selección si la sesión activa ya tiene turnos.
+
+Fase 8, verificación: en el servidor de prueba la sección «Plugins» lista primero los bundles
+(`@deepseek-ai/dsh-base` y `dsh-web-app`, marcados «solo lectura») y después
+los plugins del cargador, con títulos y descripciones de una línea. No se verificó en vivo activar,
+desactivar, quitar ni instalar. Motivos: el servidor de prueba dejó de arrancar en este entorno (el
+launcher de `dsh` reescribió `profiles/web/package.json` añadiendo `dsh-acp-app` y terminó con
+«unknown option '--host'»), y el entorno no alcanza el registro de paquetes (`fetch failed` en
+`pluginManager/inspect`). Esas acciones quedan cubiertas por pruebas con un Host simulado
+(`tests/panel.test.ts`, `tests/controller.test.ts`, `tests/panel-view.test.ts`). Pendiente: el Host
+puede pedir permiso para los scripts de compilación de un paquete (`approvedBuilds`); la CLI aún no
+ofrece esa respuesta y muestra el estado que devuelve el Host tal cual.
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

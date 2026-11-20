@@ -40,6 +40,9 @@ import { applyWorkspaceFrame, emptyWorkspaces, groupRows, sessionMove, workspace
 import {
   PanelClient,
   type AgentPresetRow,
+  type BundleRow,
+  type InspectRow,
+  type PluginRow,
   type GoalView,
   type PresetView,
   type QueueRow,
@@ -72,7 +75,7 @@ export type SettingAction =
   | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
 
 /** Sections of the panel, in the order Tab cycles through them. */
-export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'agents', 'subagents'] as const
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'agents', 'plugins', 'subagents'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
@@ -135,6 +138,10 @@ export interface PanelState {
   readonly agentPresets: readonly AgentPresetRow[] | undefined
   /** The declaration of the preset being viewed, if any. */
   readonly agentYaml: { readonly preset: string; readonly content: string } | undefined
+  /** Plugins and bundles as the Host lists them; undefined until the section loads. */
+  readonly plugins: { readonly plugins: readonly PluginRow[]; readonly bundles: readonly BundleRow[] } | undefined
+  /** The last inspection or install, with the spec it was about. */
+  readonly pluginInspect: (InspectRow & { readonly spec: string }) | undefined
   readonly note: string | undefined
 }
 
@@ -202,6 +209,31 @@ export function matchesTitleOrFolder(session: SessionSummary, query: string): bo
  * @param session - the summary, if known.
  * @returns a display title.
  */
+/** One row of the plugins section: a loader entry or a bundle. */
+export type PluginListRow = { readonly kind: 'plugin'; readonly row: PluginRow } | { readonly kind: 'bundle'; readonly row: BundleRow }
+
+/**
+ * The plugins section's rows: the bundles first (the packages a user installs or removes),
+ * then the loader entries, each in the Host's order.
+ * @param plugins - what the section loaded.
+ * @returns the rows the cursor walks.
+ */
+export function pluginRowsOf(plugins: { readonly plugins: readonly PluginRow[]; readonly bundles: readonly BundleRow[] } | undefined): PluginListRow[] {
+  if (plugins === undefined) return []
+  return [...plugins.bundles.map(row => ({ kind: 'bundle' as const, row })), ...plugins.plugins.map(row => ({ kind: 'plugin' as const, row }))]
+}
+
+/**
+ * The Host's reason why a plugin or bundle is read-only, in Spanish.
+ * @param reason - the reason the Host gives.
+ * @returns the text; unknown reasons show as they are.
+ */
+export function readOnlyText(reason: string): string {
+  if (reason === 'unaddressable') return 'lo gestiona el sistema, no el perfil'
+  if (reason === 'management-required') return 'lo gestiona el propio gestor de plugins'
+  return reason
+}
+
 /**
  * The subagents of a Session: the Sessions whose parent it is, most recently updated first as the list sorts them.
  * @param sessions - the Session list.
@@ -248,7 +280,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', agentPresets: undefined, agentYaml: undefined, note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', agentPresets: undefined, agentYaml: undefined, plugins: undefined, pluginInspect: undefined, note: undefined },
     interactions: [],
     terminal: undefined,
     attachments: [],
@@ -677,6 +709,10 @@ export class AppController {
         }
         case 'agents': {
           this.patchPanel({ agentPresets: await this.panelClient.agentPresets() })
+          return
+        }
+        case 'plugins': {
+          this.patchPanel({ plugins: await this.panelClient.plugins() })
           return
         }
         case 'subagents': {
@@ -1137,6 +1173,79 @@ export class AppController {
     await this.attempt(async () => {
       const content = await this.panelClient.agentPresetYaml(agentPreset)
       this.patchPanel({ agentYaml: { preset: agentPreset, content } })
+    })
+  }
+
+  /**
+   * Turn a plugin on or off. Rows the profile cannot change explain why, and nothing is sent.
+   * @param row - the plugin.
+   */
+  async togglePlugin(row: PluginRow): Promise<void> {
+    if (row.readOnly !== undefined) {
+      this.patchPanel({ note: `solo lectura: ${readOnlyText(row.readOnly)}` })
+      return
+    }
+    await this.attempt(async () => {
+      await this.panelClient.setPluginEnabled(row.id, !row.enabled)
+      this.patchPanel({ note: `${row.title}: ${row.enabled ? 'desactivado' : 'activado'}` })
+      await this.loadSection('plugins')
+    })
+  }
+
+  /**
+   * Select or deselect a bundle layer.
+   * @param row - the bundle.
+   */
+  async toggleBundle(row: BundleRow): Promise<void> {
+    if (row.readOnly !== undefined) {
+      this.patchPanel({ note: `solo lectura: ${readOnlyText(row.readOnly)}` })
+      return
+    }
+    await this.attempt(async () => {
+      await this.panelClient.setBundleEnabled(row.name, !row.enabled)
+      this.patchPanel({ note: `${row.name}: ${row.enabled ? 'desactivado' : 'activado'}` })
+      await this.loadSection('plugins')
+    })
+  }
+
+  /**
+   * Remove a bundle from the profile. Only removable bundles are sent.
+   * @param row - the bundle.
+   */
+  async removeBundle(row: BundleRow): Promise<void> {
+    if (!row.removable) {
+      this.patchPanel({ note: `no se puede quitar «${row.name}»: ${row.readOnly === undefined ? 'el perfil no lo permite' : readOnlyText(row.readOnly)}` })
+      return
+    }
+    await this.attempt(async () => {
+      await this.panelClient.removeBundle(row.name)
+      this.patchPanel({ note: `${row.name} quitado` })
+      await this.loadSection('plugins')
+    })
+  }
+
+  /**
+   * Read what a package spec names, before installing it.
+   * @param spec - the spec typed in the panel.
+   */
+  async inspectSpec(spec: string): Promise<void> {
+    const text = spec.trim()
+    if (text.length === 0) return
+    await this.attempt(async () => {
+      const result = await this.panelClient.inspectSpec(text)
+      this.patchPanel({ pluginInspect: { spec: text, ...result } })
+    })
+  }
+
+  /**
+   * Install the package that was inspected and accepted.
+   * @param spec - the spec.
+   */
+  async installSpec(spec: string): Promise<void> {
+    await this.attempt(async () => {
+      const result = await this.panelClient.installSpec(spec)
+      this.patchPanel({ pluginInspect: { spec, status: result.status, name: result.name, version: result.version, reason: result.reason }, note: `instalación: ${result.status}` })
+      await this.loadSection('plugins')
     })
   }
 

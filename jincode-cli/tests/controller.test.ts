@@ -13,6 +13,15 @@ let scheduleSeq = 0
 const state = {
   schedules: [{ id: 'sch-1', kind: 'every', title: 'Resumen diario', prompt: 'resume', everySeconds: 3600, target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T09:00:00.000Z', updatedAt: '2026-11-19T09:00:00.000Z', history: [] as unknown[] }] as any[],
   keys: new Set<string>(),
+  plugins: [
+    { entryId: 'core', moduleName: 'core-module', enabled: true, meta: { title: { es: 'Núcleo' } } },
+    { entryId: 'ext', moduleName: 'ext-module', enabled: false, readOnlyReason: 'management-required', meta: { title: { en: 'Extension' } } },
+  ] as Array<Record<string, any>>,
+  bundles: [
+    { name: 'dsh-base', version: '1.2.0', description: 'Base', enabled: true, installed: true, removable: false, readOnlyReason: 'unaddressable' },
+    { name: 'extra', version: '0.1.0', description: 'Extra', enabled: true, installed: true, removable: true },
+  ] as Array<Record<string, any>>,
+  pluginAnswer: { status: 'accepted', name: 'nuevo', version: '1.0.0' } as Record<string, unknown>,
   searchDisabled: false,
   calls: [] as Array<{ method: string; args: any }>,
   sessions: [{ sessionId: 's-1', updatedAt: 1000, running: false, blank: false, cwd: '/tmp', projections: { values: { title: 'Primera', modelSelection: { next: { provider: 'jincode', model: 'gpt-4o-mini' } }, permissions: { currentValue: 'danger-full-access' } } } }],
@@ -132,6 +141,28 @@ function respond(method: string, args: any, raw: any = args): unknown {
     case 'agentPresets/list': return { presets: [{ id: 'standard', order: 1, isDefault: true }, { id: 'minimal', order: 2, isDefault: false }] }
     case 'agentPresets/read': return { agentPreset: args.agentPreset, content: `- id: ${args.agentPreset}\n` }
     case 'agentPresets/select': return args.agentPreset
+    case 'pluginManager/listPlugins': return state.plugins.map(item => ({ ...item }))
+    case 'pluginManager/listBundles': return state.bundles.map(item => ({ ...item }))
+    case 'pluginManager/setPluginEnabled': {
+      const entry = state.plugins.find(item => item.entryId === args.id)
+      if (!entry) throw new Error(`no plugin ${args.id}`)
+      entry.enabled = args.enabled
+      return {}
+    }
+    case 'pluginManager/setBundleEnabled': {
+      const bundle = state.bundles.find(item => item.name === args.name)
+      if (!bundle) throw new Error(`no bundle ${args.name}`)
+      bundle.enabled = args.enabled
+      return {}
+    }
+    case 'pluginManager/removeBundle': {
+      const bundle = state.bundles.find(item => item.name === args.name)
+      if (!bundle?.removable) throw new Error(`bundle ${args.name} cannot be removed`)
+      state.bundles = state.bundles.filter(item => item.name !== args.name)
+      return {}
+    }
+    case 'pluginManager/inspect': return state.pluginAnswer
+    case 'pluginManager/installBundle': return { ...state.pluginAnswer, status: 'installed' }
     case 'subagents/prompt': return { messageId: `m-${args.childSessionId}` }
     case 'subagents/interruptByUser': return { accepted: true }
     case 'goals/edit': {
@@ -721,6 +752,60 @@ test('agents: a preset is selected only for a blank Session; a new Session takes
     assert.equal(app.snapshot().panel.agentYaml, undefined, 'the same key again closes it')
   } finally {
     session.blank = wasBlank
+    app.dispose()
+  }
+})
+
+test('plugins: rows toggle on Enter, a read-only one says why, a bundle is removed only after its second press', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('plugins')
+    const shown = app.snapshot().panel.plugins
+    assert.deepEqual(shown?.plugins.map(item => [item.id, item.enabled]), [['core', true], ['ext', false]])
+    assert.deepEqual(shown?.bundles.map(item => item.name), ['dsh-base', 'extra'])
+    await app.togglePlugin(shown!.plugins[0]!)
+    assert.deepEqual(state.calls.findLast(call => call.method === 'pluginManager/setPluginEnabled')?.args, { id: 'core', enabled: false })
+    assert.equal(state.plugins[0]?.enabled, false)
+    await app.togglePlugin(shown!.plugins[1]!)
+    assert.equal(state.calls.filter(call => call.method === 'pluginManager/setPluginEnabled').length, 1, 'a read-only entry is not sent')
+    assert.match(app.snapshot().panel.note ?? '', /solo lectura: lo gestiona el propio gestor/)
+    await app.toggleBundle(shown!.bundles[0]!)
+    assert.equal(state.calls.some(call => call.method === 'pluginManager/setBundleEnabled'), false, 'a read-only bundle is not sent')
+    await app.removeBundle(shown!.bundles[0]!)
+    assert.equal(state.calls.some(call => call.method === 'pluginManager/removeBundle'), false, 'the built-in bundle is kept')
+    await app.toggleBundle(shown!.bundles[1]!)
+    assert.deepEqual(state.calls.findLast(call => call.method === 'pluginManager/setBundleEnabled')?.args, { name: 'extra', enabled: false })
+    await app.removeBundle(shown!.bundles[1]!)
+    assert.deepEqual(state.calls.findLast(call => call.method === 'pluginManager/removeBundle')?.args, { name: 'extra' })
+    assert.deepEqual(app.snapshot().panel.plugins?.bundles.map(item => item.name), ['dsh-base'])
+  } finally {
+    state.plugins[0]!.enabled = true
+    state.plugins[1]!.enabled = false
+    state.bundles = [
+      { name: 'dsh-base', version: '1.2.0', description: 'Base', enabled: true, installed: true, removable: false, readOnlyReason: 'unaddressable' },
+      { name: 'extra', version: '0.1.0', description: 'Extra', enabled: true, installed: true, removable: true },
+    ]
+    app.dispose()
+  }
+})
+
+test('plugins: an inspection is kept with its spec; an install reports the Host answer', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('plugins')
+    await app.inspectSpec('  nuevo-paquete  ')
+    assert.deepEqual(state.calls.findLast(call => call.method === 'pluginManager/inspect')?.args, { spec: 'nuevo-paquete', options: {} })
+    assert.equal(app.snapshot().panel.pluginInspect?.spec, 'nuevo-paquete')
+    assert.equal(app.snapshot().panel.pluginInspect?.status, 'accepted')
+    await app.installSpec('nuevo-paquete')
+    const install = state.calls.findLast(call => call.method === 'pluginManager/installBundle')
+    assert.equal(install?.args.spec, 'nuevo-paquete')
+    assert.match(install?.args.options.requestId ?? '', /^[0-9a-f-]{36}$/)
+    assert.equal(app.snapshot().panel.note, 'instalación: installed')
+  } finally {
+    state.pluginAnswer = { status: 'accepted', name: 'nuevo', version: '1.0.0' }
     app.dispose()
   }
 })

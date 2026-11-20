@@ -60,6 +60,34 @@ export interface AgentPresetRow {
   readonly isDefault: boolean
 }
 
+/** One loader entry (a plugin) the Host lists. */
+export interface PluginRow {
+  readonly id: string
+  readonly title: string
+  readonly enabled: boolean
+  /** Why the row cannot change from the profile, when it cannot. */
+  readonly readOnly: string | undefined
+}
+
+/** One bundle (a package that adds a patch layer) the Host lists. */
+export interface BundleRow {
+  readonly name: string
+  readonly version: string | undefined
+  readonly description: string
+  readonly enabled: boolean
+  readonly installed: boolean
+  readonly removable: boolean
+  readonly readOnly: string | undefined
+}
+
+/** The answer of the Host about a package spec before installing it. */
+export interface InspectRow {
+  readonly status: string
+  readonly name: string | undefined
+  readonly version: string | undefined
+  readonly reason: string | undefined
+}
+
 /** One skill the Session can use. */
 export interface SkillRow {
   readonly name: string
@@ -493,6 +521,61 @@ export class PanelClient {
     return typeof value === 'string' ? value : agentPreset
   }
 
+  /** @returns the loader entries (plugins) and the bundles, as the Host lists them. */
+  async plugins(): Promise<{ plugins: PluginRow[]; bundles: BundleRow[] }> {
+    const [entries, bundles] = await Promise.all([
+      call<unknown>(this.connection, 'pluginManager/listPlugins', {}),
+      call<unknown>(this.connection, 'pluginManager/listBundles', {}),
+    ])
+    return { plugins: normalizePlugins(entries), bundles: normalizeBundles(bundles) }
+  }
+
+  /**
+   * Turn a plugin entry on or off on the live profiles.
+   * @param id - the loader entry id.
+   * @param enabled - the new state.
+   */
+  async setPluginEnabled(id: string, enabled: boolean): Promise<void> {
+    await call(this.connection, 'pluginManager/setPluginEnabled', { id, enabled })
+  }
+
+  /**
+   * Select or deselect a bundle layer; its installed dependencies stay.
+   * @param name - the bundle.
+   * @param enabled - the new state.
+   */
+  async setBundleEnabled(name: string, enabled: boolean): Promise<void> {
+    await call(this.connection, 'pluginManager/setBundleEnabled', { name, enabled })
+  }
+
+  /**
+   * Remove a bundle dependency from the profile.
+   * @param name - the bundle.
+   */
+  async removeBundle(name: string): Promise<void> {
+    await call(this.connection, 'pluginManager/removeBundle', { name })
+  }
+
+  /**
+   * Read what a spec names, without installing it.
+   * @param spec - a registry name, path, git address or tarball.
+   * @returns the Host's answer.
+   */
+  async inspectSpec(spec: string): Promise<InspectRow> {
+    return normalizeInspect(await call(this.connection, 'pluginManager/inspect', { spec, options: {} }))
+  }
+
+  /**
+   * Install a package. The request identity is minted here, so the install can be cancelled by name.
+   * @param spec - the package spec.
+   * @returns the Host's answer, with its status.
+   */
+  async installSpec(spec: string): Promise<{ requestId: string } & InspectRow> {
+    const requestId = randomUUID()
+    const value = await call<unknown>(this.connection, 'pluginManager/installBundle', { spec, options: { requestId } })
+    return { requestId, ...normalizeInspect(value) }
+  }
+
   /** @returns how many ended tasks the Host removed. */
   async clearEndedSchedules(): Promise<number> {
     const value = await call<unknown>(this.connection, 'schedule/deleteInactive', {})
@@ -529,6 +612,66 @@ export function normalizeAgentPresets(value: unknown): AgentPresetRow[] {
     rows.push({ id: item['id'], isDefault: item['isDefault'] === true })
   }
   return rows
+}
+
+/**
+ * Read the loader entries the Host lists. A title is taken in Spanish, then English, then the module name.
+ * @param value - the `pluginManager/listPlugins` result.
+ * @returns the entries.
+ */
+export function normalizePlugins(value: unknown): PluginRow[] {
+  if (!Array.isArray(value)) return []
+  const rows: PluginRow[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item['entryId'] !== 'string') continue
+    const meta = isRecord(item['meta']) && isRecord(item['meta']['title']) ? item['meta']['title'] : undefined
+    const title = typeof meta?.['es'] === 'string' ? meta['es'] : typeof meta?.['en'] === 'string' ? meta['en'] : typeof item['moduleName'] === 'string' ? item['moduleName'] : item['entryId']
+    rows.push({
+      id: item['entryId'],
+      title,
+      enabled: item['enabled'] === true,
+      readOnly: typeof item['readOnlyReason'] === 'string' ? item['readOnlyReason'] : undefined,
+    })
+  }
+  return rows
+}
+
+/**
+ * Read the bundles the Host lists.
+ * @param value - the `pluginManager/listBundles` result.
+ * @returns the bundles.
+ */
+export function normalizeBundles(value: unknown): BundleRow[] {
+  if (!Array.isArray(value)) return []
+  const rows: BundleRow[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item['name'] !== 'string') continue
+    rows.push({
+      name: item['name'],
+      version: typeof item['version'] === 'string' ? item['version'] : undefined,
+      description: typeof item['description'] === 'string' ? item['description'] : '',
+      enabled: item['enabled'] === true,
+      installed: item['installed'] === true,
+      removable: item['removable'] === true,
+      readOnly: typeof item['readOnlyReason'] === 'string' ? item['readOnlyReason'] : undefined,
+    })
+  }
+  return rows
+}
+
+/**
+ * Read the answer to an inspection or an install.
+ * @param value - the Host answer.
+ * @returns the status and what it names.
+ */
+export function normalizeInspect(value: unknown): InspectRow {
+  const record = isRecord(value) ? value : {}
+  return {
+    status: typeof record['status'] === 'string' ? record['status'] : 'desconocido',
+    name: typeof record['name'] === 'string' ? record['name'] : undefined,
+    version: typeof record['version'] === 'string' ? record['version'] : undefined,
+    reason: typeof record['reason'] === 'string' ? record['reason'] : typeof record['problem'] === 'string' ? record['problem'] : undefined,
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

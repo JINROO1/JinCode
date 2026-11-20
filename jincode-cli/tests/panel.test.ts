@@ -94,6 +94,19 @@ const replies: Record<string, unknown> = {
   'agentPresets/list': { presets: [{ id: 'standard', order: 1, isDefault: true }, { id: 'minimal', order: 2, isDefault: false }] },
   'agentPresets/read': { agentPreset: 'minimal', content: '- id: persona\n' },
   'agentPresets/select': 'minimal',
+  'pluginManager/listPlugins': [
+    { entryId: 'core', moduleName: 'core-module', enabled: true, meta: { title: { es: 'Núcleo', en: 'Core' } } },
+    { entryId: 'ext', moduleName: 'ext-module', enabled: false, readOnlyReason: 'management-required', meta: { title: { en: 'Extension' } } },
+  ],
+  'pluginManager/listBundles': [
+    { name: 'dsh-base', version: '1.2.0', description: 'Base', enabled: true, installed: true, removable: false, readOnlyReason: 'unaddressable' },
+    { name: 'extra', version: '0.1.0', description: '', enabled: false, installed: true, removable: true },
+  ],
+  'pluginManager/setPluginEnabled': {},
+  'pluginManager/setBundleEnabled': {},
+  'pluginManager/removeBundle': {},
+  'pluginManager/inspect': { status: 'accepted', name: 'extra', version: '0.2.0' },
+  'pluginManager/installBundle': { status: 'accepted', name: 'extra', version: '0.2.0' },
   'subagents/prompt': { messageId: 'm-1' },
   'subagents/interruptByUser': { accepted: true },
   'goals/edit': { id: 'goal-1', revision: 5, objective: 'nuevo', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
@@ -252,6 +265,35 @@ test('agent presets are read from the roster; the declaration and the selection 
   assert.deepEqual(last().args, { agentPreset: 'minimal' })
   assert.equal(await client.selectAgentPreset('s-1', 'minimal'), 'minimal')
   assert.deepEqual(last().args, { agentId: 's-1', agentPreset: 'minimal' })
+})
+
+test('plugins: the loader entries and the bundles are read with their titles and readiness', async () => {
+  const listed = await client.plugins()
+  assert.deepEqual(listed.plugins, [
+    { id: 'core', title: 'Núcleo', enabled: true, readOnly: undefined },
+    { id: 'ext', title: 'Extension', enabled: false, readOnly: 'management-required' },
+  ])
+  assert.deepEqual(listed.bundles.map(item => [item.name, item.removable, item.readOnly]), [['dsh-base', false, 'unaddressable'], ['extra', true, undefined]])
+  assert.equal(last().method, 'pluginManager/listBundles')
+})
+
+test('plugins: toggles, removal and the inspection send the names the Host expects', async () => {
+  await client.setPluginEnabled('core', false)
+  assert.deepEqual(last().args, { id: 'core', enabled: false })
+  await client.setBundleEnabled('extra', true)
+  assert.deepEqual(last().args, { name: 'extra', enabled: true })
+  await client.removeBundle('extra')
+  assert.deepEqual(last().args, { name: 'extra' })
+  assert.deepEqual(await client.inspectSpec('extra@0.2.0'), { status: 'accepted', name: 'extra', version: '0.2.0', reason: undefined })
+  assert.deepEqual(last().args, { spec: 'extra@0.2.0', options: {} })
+})
+
+test('plugins: an install carries a request identity that a later cancellation can name', async () => {
+  const installed = await client.installSpec('extra@0.2.0')
+  assert.match(installed.requestId, /^[0-9a-f-]{36}$/)
+  assert.equal(last().method, 'pluginManager/installBundle')
+  assert.deepEqual(last().args, { spec: 'extra@0.2.0', options: { requestId: installed.requestId } })
+  assert.equal(installed.status, 'accepted')
 })
 
 test('skills are read with their wrapper', async () => {

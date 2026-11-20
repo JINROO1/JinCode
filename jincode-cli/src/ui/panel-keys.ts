@@ -5,7 +5,7 @@
 import { emptyBuffer, bufferOf, textOf, type Buffer } from './composer.ts'
 import { editField, type KeyLike } from './keys.ts'
 import { panelRowCount, panelSelection, CONFIRMED_PRESETS } from './Panel.tsx'
-import { PANEL_SECTIONS, groupableSessions, subagentsOf, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
+import { PANEL_SECTIONS, groupableSessions, pluginRowsOf, subagentsOf, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
 import { groupRows } from '../app/workspace-model.ts'
 import {
   SCHEDULE_FIELDS,
@@ -64,6 +64,49 @@ function handleAgentKey(keys: PanelKeys): void {
   if (key.return) void controller.selectAgentPreset(preset.id)
   else if (input === 'n') void controller.newSessionWithPreset(preset.id)
   else if (input === 'v') void controller.toggleAgentYaml(preset.id)
+}
+
+/**
+ * Keys of the plugins section. With the field empty, Enter turns the row under
+ * the cursor on or off and Ctrl+X removes a bundle, after a second press. With
+ * text in the field, Enter inspects that package spec; once the Host accepts it,
+ * a second Enter with the same text installs it.
+ * @param keys - the panel keys.
+ */
+function handlePluginKey(keys: PanelKeys): void {
+  const { input, key, state, controller, field, setField, cursor, armed, setArmed } = keys
+  const wasArmed = armed
+  if (wasArmed !== undefined) setArmed(undefined)
+  const rows = pluginRowsOf(state.panel.plugins)
+  if (key.ctrl && input === 'x') {
+    const item = rows[cursor]
+    if (item === undefined || item.kind !== 'bundle') return
+    if (wasArmed === `remove:${item.row.name}`) {
+      void controller.removeBundle(item.row)
+      return
+    }
+    setArmed(`remove:${item.row.name}`)
+    controller.notePanel(`pulsa Ctrl+X otra vez para quitar «${item.row.name}»`)
+    return
+  }
+  if (key.ctrl) return
+  if (key.return) {
+    const text = textOf(field).trim()
+    if (text.length > 0) {
+      const inspected = state.panel.pluginInspect
+      if (inspected !== undefined && inspected.spec === text && inspected.status === 'accepted') {
+        setField(emptyBuffer())
+        void controller.installSpec(text)
+      } else void controller.inspectSpec(text)
+      return
+    }
+    const item = rows[cursor]
+    if (item === undefined) return
+    if (item.kind === 'plugin') void controller.togglePlugin(item.row)
+    else void controller.toggleBundle(item.row)
+    return
+  }
+  setField(editField(field, input, key))
 }
 
 /**
@@ -490,6 +533,11 @@ export function handlePanelKey(keys: PanelKeys): void {
 
   if (section === 'agents') {
     handleAgentKey(keys)
+    return
+  }
+
+  if (section === 'plugins') {
+    handlePluginKey(keys)
     return
   }
 

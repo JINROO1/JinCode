@@ -27,6 +27,8 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     subagentDelivery: 'queue',
     agentPresets: undefined,
     agentYaml: undefined,
+    plugins: undefined,
+    pluginInspect: undefined,
     schedules: undefined,
     scheduleLimit: undefined,
     scheduleHistory: undefined,
@@ -673,6 +675,76 @@ test('subagents: the list names each child with its state, and says when there a
   }))
   assert.match(none.lastFrame() ?? '', /Esta sesión no tiene subagentes\./)
   none.unmount()
+})
+
+const pluginPanel = (extra: Partial<PanelState> = {}): Partial<PanelState> => ({
+  section: 'plugins',
+  plugins: {
+    plugins: [{ id: 'core', title: 'Núcleo', enabled: true, readOnly: undefined }, { id: 'ext', title: 'Extension', enabled: false, readOnly: 'management-required' }],
+    bundles: [{ name: 'dsh-base', version: '1.2.0', description: 'Base del perfil', enabled: true, installed: true, removable: false, readOnly: 'unaddressable' }, { name: 'extra', version: '0.1.0', description: '', enabled: true, installed: true, removable: true, readOnly: undefined }],
+  },
+  ...extra,
+})
+
+test('plugins: the rows show their state; a read-only one says why; a bundle shows its version and description', () => {
+  const frame = render(React.createElement(Panel, {
+    state: stateWith(pluginPanel()), width: 100, height: 40, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  const shown = frame.lastFrame() ?? ''
+  assert.match(shown, /› \[x\] dsh-base@1\.2\.0 · instalado · activo · solo lectura/)
+  assert.match(shown, /Base del perfil/)
+  assert.match(shown, /\[x\] Núcleo/)
+  assert.match(shown, /\[ \] Extension · solo lectura/)
+  assert.match(shown, /Paquete a inspeccionar o instalar:/)
+  frame.unmount()
+  const moved = render(React.createElement(Panel, {
+    state: stateWith(pluginPanel()), width: 100, height: 40, cursor: 3, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  assert.match(moved.lastFrame() ?? '', /Motivo: lo gestiona el propio gestor de plugins/)
+  moved.unmount()
+})
+
+test('plugins: a long bundle description takes one line and ends with an ellipsis', () => {
+  const long = 'Descripción muy larga '.repeat(20)
+  const panel = pluginPanel({ plugins: { plugins: [], bundles: [{ name: 'largo', version: '1.0.0', description: long, enabled: true, installed: true, removable: true, readOnly: undefined }] } })
+  const frame = render(React.createElement(Panel, { state: stateWith(panel), width: 80, height: 40, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined }))
+  const shown = (frame.lastFrame() ?? '').split('\n')
+  const line = shown.find(text => text.includes('Descripción muy'))
+  assert.ok(line !== undefined && line.includes('…'), 'the description is cut')
+  assert.equal(shown.filter(text => text.includes('Descripción')).length, 1, 'it stays on one line')
+  frame.unmount()
+})
+
+test('plugins: Enter toggles the row under the cursor; with text it inspects, and a second Enter installs an accepted spec', () => {
+  const { controller, calls } = fakeController()
+  const at = (cursor: number, field = emptyBuffer(), extra: Partial<PanelState> = {}) => keysFor(stateWith(pluginPanel(extra)), controller, { input: '', key: { return: true }, cursor, field })
+  handlePanelKey(at(2))
+  assert.match(calls.at(-1) ?? '', /^togglePlugin .*"id":"core"/)
+  handlePanelKey(at(1))
+  assert.match(calls.at(-1) ?? '', /^toggleBundle .*"name":"extra"/)
+  handlePanelKey(at(0, bufferOf('nuevo-paquete')))
+  assert.equal(calls.at(-1), 'inspectSpec "nuevo-paquete"')
+  const accepted = { spec: 'nuevo-paquete', status: 'accepted', name: undefined, version: undefined, reason: undefined }
+  handlePanelKey(at(0, bufferOf('nuevo-paquete'), { pluginInspect: accepted }))
+  assert.equal(calls.at(-1), 'installSpec "nuevo-paquete"')
+  handlePanelKey(at(0, bufferOf('otro'), { pluginInspect: accepted }))
+  assert.equal(calls.at(-1), 'inspectSpec "otro"', 'an inspection for another spec does not install')
+})
+
+test('plugins: Ctrl+X asks twice before removing a bundle; a plugin row is never removed', () => {
+  const { controller, calls } = fakeController()
+  let armed: string | undefined
+  const press = (cursor: number): void => {
+    handlePanelKey(keysFor(stateWith(pluginPanel()), controller, { input: 'x', key: { ctrl: true }, cursor, armed, setArmed: value => { armed = value } }))
+  }
+  press(1)
+  assert.equal(calls.some(call => call.startsWith('removeBundle')), false, 'the first press only asks')
+  assert.equal(armed, 'remove:extra')
+  press(1)
+  assert.match(calls.at(-1) ?? '', /^removeBundle .*"name":"extra"/)
+  press(2)
+  press(2)
+  assert.equal(calls.some(call => call.startsWith('removeBundle') && call.includes('core')), false, 'a plugin row is not a bundle')
 })
 
 test('agents: Enter selects, n opens a new Session with the preset, v shows the declaration', () => {

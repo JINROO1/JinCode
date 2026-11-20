@@ -7,7 +7,7 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import type { AppState, PanelSection } from '../app/controller.ts'
-import { PANEL_SECTIONS, groupableSessions, subagentsOf, titleOf } from '../app/controller.ts'
+import { PANEL_SECTIONS, groupableSessions, pluginRowsOf, readOnlyText, subagentsOf, titleOf } from '../app/controller.ts'
 import { packHints, truncate, wrapText } from './layout.ts'
 import { type Buffer, textOf } from './composer.ts'
 import { type StyledLine, type Tone } from './format.ts'
@@ -53,6 +53,7 @@ export const SECTION_LABEL: Record<PanelSection, string> = {
   schedule: 'Programaciones',
   skills: 'Habilidades',
   agents: 'Agentes',
+  plugins: 'Plugins',
   subagents: 'Subagentes',
 }
 
@@ -110,6 +111,7 @@ export function panelRowCount(state: AppState): number {
     case 'schedule': return panel.schedules?.length ?? 0
     case 'skills': return panel.skills?.length ?? 0
     case 'agents': return panel.agentPresets?.length ?? 0
+    case 'plugins': return pluginRowsOf(panel.plugins).length
     case 'subagents': return subagentsOf(state.sessions, state.activeId).length
     case 'goals': return 0
   }
@@ -432,6 +434,38 @@ export function sectionView(props: PanelProps): SectionView {
       hint('Enter selecciona el agente en la sesión activa (solo si está vacía) · n abre una sesión nueva con él · v muestra su declaración')
       return { body, focus, footer }
     }
+    case 'plugins': {
+      add(`Paquete a inspeccionar o instalar: ${textOf(field)}▌`, 'text')
+      const inspected = panel.pluginInspect
+      if (inspected !== undefined) {
+        add(`Inspección de ${inspected.spec}: ${inspected.status}${inspected.reason === undefined ? '' : ` — ${inspected.reason}`}`, inspected.status === 'accepted' ? 'success' : 'muted')
+        if (inspected.status === 'accepted') add('Enter otra vez, con el mismo texto, lo instala.', 'muted')
+      }
+      if (panel.plugins === undefined) {
+        add('Cargando los plugins…', 'muted')
+        return { body, focus, footer }
+      }
+      const rows = pluginRowsOf(panel.plugins)
+      if (rows.length === 0) add('No hay plugins ni paquetes.', 'muted')
+      rows.forEach((item, index) => {
+        if (item.kind === 'plugin') {
+          const suffix = item.row.readOnly === undefined ? '' : ' · solo lectura'
+          row(`${index === cursor ? '›' : ' '} [${item.row.enabled ? 'x' : ' '}] ${item.row.title}${suffix}`, index === cursor)
+        } else {
+          const state = `${item.row.installed ? 'instalado' : 'no instalado'} · ${item.row.enabled ? 'activo' : 'inactivo'}`
+          const readOnly = item.row.readOnly === undefined ? '' : ' · solo lectura'
+          row(`${index === cursor ? '›' : ' '} [${item.row.enabled ? 'x' : ' '}] ${item.row.name}${item.row.version === undefined ? '' : `@${item.row.version}`} · ${state}${readOnly}`, index === cursor)
+          if (item.row.description.length > 0) add(`      ${oneLine(item.row.description, width - 8)}`, 'muted')
+        }
+      })
+      const selected = rows[cursor]
+      if (selected !== undefined) {
+        const reason = selected.row.readOnly
+        if (reason !== undefined) add(`Motivo: ${readOnlyText(reason)}`, 'faint')
+      }
+      hint('Enter con el campo vacío activa o desactiva la fila · con texto, Enter lo inspecciona · Ctrl+X quita un bundle (dos veces)')
+      return { body, focus, footer }
+    }
     case 'subagents': {
       if (state.activeId === undefined) return { body: [{ text: 'Abre una sesión para ver sus subagentes.', tone: 'muted' }], focus, footer }
       const children = subagentsOf(state.sessions, state.activeId)
@@ -472,4 +506,16 @@ function toneOf(tone: Tone): string | undefined {
     error: palette.error,
   }
   return map[tone]
+}
+
+/**
+ * Cut a text to one line of the given width, with an ellipsis when it is longer.
+ * @param text - the text.
+ * @param width - the most characters it may take.
+ * @returns the shortened text.
+ */
+function oneLine(text: string, width: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  const limit = Math.max(8, width)
+  return flat.length <= limit ? flat : `${flat.slice(0, limit - 1)}…`
 }
