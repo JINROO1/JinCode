@@ -29,6 +29,7 @@ intercambia por una cookie de sesión y no lo guarda en disco.
 | Ctrl+T | Panel: cola, permisos, ajustes, metas, programaciones y habilidades (ver abajo) |
 | Ctrl+G | Claves de los proveedores: Tab cambia de proveedor, Enter guarda, Ctrl+D elimina |
 | Ctrl+F | Buscar en las sesiones (títulos y carpetas; contenido si el Host lo tiene activo) |
+| Ctrl+U | Adjuntar un archivo o una imagen (ruta; las imágenes se envían como imagen, el resto se sube) |
 | Ctrl+R | Renombrar la sesión |
 | Ctrl+B | Bifurcar la sesión |
 | Esc · Ctrl+C | Cancelar el turno en curso (Esc también cierra cualquier superposición) |
@@ -46,6 +47,16 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío) |
 | Programaciones | ↑↓ listan las tareas programadas. Solo lectura |
 | Habilidades | ↑↓ listan las habilidades de la sesión con su descripción |
+
+Tarjetas de la sesión activa (aparecen sobre el compositor):
+
+| Tarjeta | Teclas |
+|---|---|
+| Pregunta del agente | ↑↓ eligen fila · Espacio marca · Enter confirma la pregunta (en la última envía el lote) · Tab/→ y Shift+Tab/← cambian de pregunta · texto libre al escribir · Esc la delega |
+| Aprobación de herramienta | `y` permite una vez · `n` rechaza · Esc delega (la herramienta queda sin aprobar) |
+
+Las preguntas o aprobaciones de otra sesión no roban la entrada: se avisan en el cuerpo de la
+conversación y se responden al abrir esa sesión.
 
 Nota: Ctrl+M y Ctrl+H no se usan, porque los terminales los envían como Enter y Retroceso.
 
@@ -89,7 +100,7 @@ Principios de la interfaz:
 ```bash
 npm ci
 npm run typecheck   # tsc --noEmit, modo estricto
-npm test            # node:test, 103 pruebas
+npm test            # node:test, 149 pruebas
 ```
 
 Cobertura: capa wire (conexión, RPC, mux, errores tipados), reductor de la transcripción
@@ -122,9 +133,15 @@ controlador en `tests/controller.test.ts`.
 | 4 | Modelos y credenciales: catálogo, selección, guardar y eliminar claves | Hecho, probado |
 | 5 | Cola (dirigir, editar, quitar), permisos, esfuerzo de razonamiento | Hecho, probado en vivo |
 | 5b | Panel: ajustes (solo lectura), metas (crear, pausar, reanudar, completar, eliminar), programaciones y habilidades (solo lectura) | Hecho, probado en vivo |
-| 6 | Preguntas del agente (`userQuestions`: respuesta y espera temporizada con reclamo), adjuntos (`fileUploads/upload`, `session/attachment`), aprobaciones (`approval/policy`) | Pendiente |
+| 6 | Preguntas del agente (`userQuestions`: respuesta por `$events`), adjuntos (`fileUploads/upload`, imagen en el prompt), aprobaciones (`approval/request`) | Hecho en vivo: respuesta a pregunta, aprobar una vez, rechazar. Pendiente en vivo: espera temporizada (`userQuestions/attachWait`) y adjuntos |
 | 7 | Ajustes editables (`settings/update`, `settings/replace`); espacio de trabajo (`workspace/*`: crear, renombrar, fijar, archivar; `workspaceFiles/*`); terminal (`terminal/*`) | Pendiente |
 | 8 | Programaciones (`schedule/create`, `edit`, `run`, `history`); metas editar (`goals/edit`); subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
+
+Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
+responder), aprobación `y` (la herramienta se ejecuta y el turno termina con «completado») y
+rechazo `n` (la herramienta queda denegada). Aprobaciones y preguntas requieren el servidor
+con `DSH_PERMISSION_MODE=read-only` para que `bash` pida aprobación, y `JINCODE_BASE_URL`
+apuntando al modelo de prueba; sin esa variable el turno falla con «Connection error.».
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

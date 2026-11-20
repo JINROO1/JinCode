@@ -41,16 +41,18 @@ export interface RemoteConnection {
  * @param origin - server origin, without a path.
  * @param token - the access token printed at startup.
  * @param fetchImpl - fetch implementation (injectable for tests).
+ * @param interactions - `answer` lets this client answer the Agent's questions and approvals (the default, since the terminal is interactive); `none` is passive.
  * @returns a connection whose cookie authenticates every later call.
  */
 export async function connect(
   origin: string,
   token: string,
   fetchImpl: typeof fetch = fetch,
+  interactions: 'answer' | 'none' = 'answer',
 ): Promise<RemoteConnection> {
   const url = new URL('/connect', origin)
   url.searchParams.set('token', token)
-  url.searchParams.set('interactions', 'none')
+  url.searchParams.set('interactions', interactions)
   const response = await fetchImpl(url, { redirect: 'manual' })
   if (response.status !== 302) {
     throw new RemoteError('auth/rejected', `the server did not accept the access token (HTTP ${response.status})`)

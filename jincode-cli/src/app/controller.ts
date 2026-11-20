@@ -2,13 +2,31 @@
  * Application state and actions, independent of the rendering library. The UI
  * subscribes to snapshots and calls actions; every Host call goes through here.
  */
-import { call, type RemoteConnection } from '../wire/remote.ts'
+import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { call, RemoteMux, type RemoteConnection } from '../wire/remote.ts'
 import {
   SessionClient,
   type Follow,
   type ModelChoice,
   type SessionSummary,
 } from './session-client.ts'
+import { InteractionClient } from './interactions.ts'
+import {
+  imageMediaTypeOf,
+  fileNameOf,
+  resolvePath,
+  sizeProblem,
+  type AttachmentDraft,
+} from './attachments.ts'
+import type {
+  AnswerItem,
+  ApprovalDecision,
+  PendingApproval,
+  PendingInteraction,
+  PendingQuestion,
+} from './interaction-rules.ts'
 import { emptyTranscript, type Transcript } from '../transcript/reducer.ts'
 import {
   PanelClient,
@@ -21,7 +39,10 @@ import {
 } from './panel-client.ts'
 
 /** The overlay covering the conversation, if any. */
-export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help' | 'panel'
+export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help' | 'panel' | 'attach'
+
+/** How often the Session list is read again while a turn runs, to find continued questions. */
+const POLL_MS = 2500
 
 /** Sections of the panel, in the order Tab cycles through them. */
 export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'goals', 'schedule', 'skills'] as const
@@ -49,6 +70,10 @@ export interface AppState {
   /** Why content search did not run, when the title and folder match is all there is. */
   readonly searchNote: string | undefined
   readonly panel: PanelState
+  /** Questions and approvals waiting for the person; the first one is shown. */
+  readonly interactions: readonly PendingInteraction[]
+  /** Attachments waiting for the next prompt of the active Session. */
+  readonly attachments: readonly AttachmentDraft[]
   readonly overlay: Overlay
   readonly notice: string | undefined
   readonly error: string | undefined
@@ -106,6 +131,9 @@ export function titleOf(session: SessionSummary | undefined): string {
 export class AppController {
   private readonly sessions: SessionClient
   private readonly panelClient: PanelClient
+  private readonly interactionClient: InteractionClient
+  private readonly attachmentsBySession = new Map<string, AttachmentDraft[]>()
+  private poll: ReturnType<typeof setInterval> | undefined
   private follow: Follow | undefined
   private readonly listeners = new Set<(state: AppState) => void>()
   private state: AppState = {
@@ -120,14 +148,22 @@ export class AppController {
     searchResults: [],
     searchNote: undefined,
     panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, goal: undefined, schedules: undefined, skills: undefined, note: undefined },
+    interactions: [],
+    attachments: [],
     overlay: 'none',
     notice: undefined,
     error: undefined,
   }
 
   constructor(private readonly connection: RemoteConnection) {
-    this.sessions = new SessionClient(connection)
+    // The Host accepts one multiplexed socket per connection, so every stream shares this one.
+    const mux = new RemoteMux(connection)
+    this.sessions = new SessionClient(connection, mux)
     this.panelClient = new PanelClient(connection)
+    this.interactionClient = new InteractionClient(connection, {
+      onChange: pending => this.patch({ interactions: pending }),
+      onError: error => this.fail(error),
+    }, mux)
   }
 
   /** @returns the current snapshot. */
@@ -152,6 +188,7 @@ export class AppController {
    * recently updated Session, or create one when none exists.
    */
   async start(): Promise<void> {
+    this.interactionClient.start()
     await Promise.all([this.refreshSessions(), this.refreshCatalog(), this.refreshProviders()])
     const first = this.state.sessions[0]
     if (first !== undefined) await this.open(first.sessionId)
@@ -173,11 +210,13 @@ export class AppController {
    */
   async open(sessionId: string): Promise<void> {
     this.follow?.stop()
-    this.patch({ activeId: sessionId, transcript: emptyTranscript(), overlay: 'none', error: undefined })
+    this.patch({ activeId: sessionId, transcript: emptyTranscript(), overlay: 'none', error: undefined, attachments: this.attachmentsOf(sessionId) })
     this.follow = this.sessions.follow(
       sessionId,
       transcript => {
-        if (this.state.activeId === sessionId) this.patch({ transcript })
+        if (this.state.activeId !== sessionId) return
+        this.patch({ transcript })
+        this.followPolling(transcript.running)
       },
       error => {
         this.fail(error)
@@ -193,11 +232,93 @@ export class AppController {
   async send(text: string): Promise<void> {
     const sessionId = this.state.activeId
     const body = text.trim()
-    if (sessionId === undefined || body.length === 0) return
+    const drafts = this.attachmentsOf(sessionId)
+    if (sessionId === undefined || (body.length === 0 && drafts.length === 0)) return
     const mode = this.state.transcript.running ? 'steer' : 'queue'
     await this.attempt(async () => {
-      await this.sessions.sendPrompt(sessionId, body, mode)
-      this.patch({ error: undefined })
+      await this.sessions.sendPrompt(sessionId, body, mode, drafts.map(draft => draft.part))
+      this.attachmentsBySession.delete(sessionId)
+      this.patch({ error: undefined, attachments: [] })
+    })
+  }
+
+  /**
+   * Read a file from the terminal's machine and attach it to the next prompt of
+   * the active Session. Images travel inline; other files are uploaded first.
+   * @param input - the path as typed; `~` and relative paths are resolved here.
+   */
+  async attachFile(input: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined || input.trim().length === 0) return
+    const path = resolvePath(input, homedir(), process.cwd())
+    const name = fileNameOf(path)
+    await this.attempt(async () => {
+      let data: Buffer
+      try {
+        data = await readFile(path)
+      } catch {
+        throw new Error(`no se pudo leer ${path}`)
+      }
+      const problem = sizeProblem(data.byteLength)
+      if (problem !== undefined) throw new Error(`${name}: ${problem}`)
+      const mediaType = imageMediaTypeOf(name)
+      const key = randomUUID()
+      if (mediaType !== undefined) {
+        this.addAttachment(sessionId, { key, name, size: data.byteLength, part: { type: 'image', mediaType, data: data.toString('base64'), name } })
+      } else {
+        this.patch({ notice: `subiendo ${name}…` })
+        const uploaded = await this.sessions.uploadFile(sessionId, name, data)
+        this.addAttachment(sessionId, { key, name: uploaded.name, size: data.byteLength, part: { type: 'file', receiptId: uploaded.receiptId } })
+      }
+      this.patch({ error: undefined, notice: `adjunto: ${name}` })
+    })
+  }
+
+  /**
+   * Drop one attachment from the next prompt.
+   * @param index - the position in the attachment list.
+   */
+  removeAttachment(index: number): void {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    const drafts = this.attachmentsOf(sessionId)
+    if (index < 0 || index >= drafts.length) return
+    const rest = drafts.filter((_, position) => position !== index)
+    this.attachmentsBySession.set(sessionId, rest)
+    this.patch({ attachments: rest })
+  }
+
+  /**
+   * Answer a question the Agent asked.
+   * @param item - the pending question.
+   * @param answers - one answer per question.
+   */
+  async answerQuestion(item: PendingQuestion, answers: readonly AnswerItem[]): Promise<void> {
+    await this.attempt(async () => {
+      await this.interactionClient.answerQuestion(item, answers)
+      this.patch({ error: undefined, notice: 'respuesta enviada' })
+    })
+  }
+
+  /**
+   * Decide a tool approval.
+   * @param item - the pending approval.
+   * @param decision - allow once, or reject.
+   */
+  async decideApproval(item: PendingApproval, decision: ApprovalDecision): Promise<void> {
+    await this.attempt(async () => {
+      await this.interactionClient.decideApproval(item, decision)
+      this.patch({ error: undefined, notice: decision === 'allowed-once' ? 'herramienta aprobada una vez' : 'herramienta rechazada' })
+    })
+  }
+
+  /**
+   * Pass a pending interaction on to the next answerer.
+   * @param item - the pending interaction.
+   */
+  async delegateInteraction(item: PendingInteraction): Promise<void> {
+    await this.attempt(async () => {
+      await this.interactionClient.delegate(item)
     })
   }
 
@@ -500,15 +621,40 @@ export class AppController {
   async refreshSessions(): Promise<void> {
     await this.attempt(async () => {
       const sessions = await this.sessions.listSessions()
+      for (const session of sessions) this.interactionClient.setContinued(session.sessionId, session.userQuestions)
       this.patch({ sessions: [...sessions].sort((a, b) => b.updatedAt - a.updatedAt) })
     })
   }
 
-  /** Stop following, close the socket and drop listeners. */
+  /** Stop following, close the sockets and drop listeners. */
   dispose(): void {
+    this.followPolling(false)
     this.follow?.stop()
+    this.interactionClient.stop()
     this.sessions.close()
     this.listeners.clear()
+  }
+
+  private attachmentsOf(sessionId: string | undefined): AttachmentDraft[] {
+    return sessionId === undefined ? [] : this.attachmentsBySession.get(sessionId) ?? []
+  }
+
+  private addAttachment(sessionId: string, draft: AttachmentDraft): void {
+    const next = [...this.attachmentsOf(sessionId), draft]
+    this.attachmentsBySession.set(sessionId, next)
+    if (this.state.activeId === sessionId) this.patch({ attachments: next })
+  }
+
+  /** While a turn runs, read the Session list again so a timed question that becomes continued shows up. */
+  private followPolling(running: boolean): void {
+    if (running && this.poll === undefined) {
+      this.poll = setInterval(() => {
+        void this.refreshSessions()
+      }, POLL_MS)
+    } else if (!running && this.poll !== undefined) {
+      clearInterval(this.poll)
+      this.poll = undefined
+    }
   }
 
   private async refreshCatalog(): Promise<void> {

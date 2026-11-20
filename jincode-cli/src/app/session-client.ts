@@ -4,6 +4,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { call, RemoteMux, type RemoteConnection, type RemoteStream } from '../wire/remote.ts'
+import type { PromptAttachment } from './attachments.ts'
 import {
   applyEvent,
   applyLiveFrame,
@@ -15,6 +16,8 @@ import {
 
 /** One Session row from `session/list`. */
 export interface SessionSummary {
+  /** The Session's `userQuestions` projection value, when the Host sent one. */
+  readonly userQuestions?: unknown
   readonly sessionId: string
   readonly updatedAt: number
   readonly running: boolean
@@ -56,8 +59,12 @@ export interface Follow {
 export class SessionClient {
   private readonly mux: RemoteMux
 
-  constructor(private readonly connection: RemoteConnection) {
-    this.mux = new RemoteMux(connection)
+  /**
+   * @param connection - the authenticated connection.
+   * @param mux - the one multiplexed socket this client shares with the others; the Host accepts one per connection.
+   */
+  constructor(private readonly connection: RemoteConnection, mux: RemoteMux = new RemoteMux(connection)) {
+    this.mux = mux
   }
 
   /** @returns Session rows visible to this client, ordered by the Host. */
@@ -86,12 +93,37 @@ export class SessionClient {
    * @param mode - `queue` for the next turn, `steer` for the running one.
    * @returns the client-minted request id.
    */
-  async sendPrompt(sessionId: string, text: string, mode: 'queue' | 'steer' = 'queue'): Promise<string> {
+  async sendPrompt(
+    sessionId: string,
+    text: string,
+    mode: 'queue' | 'steer' = 'queue',
+    attachments: readonly PromptAttachment[] = [],
+  ): Promise<string> {
     const requestId = randomUUID()
+    const content: Array<{ type: 'text'; text: string } | PromptAttachment> = [
+      ...text.length > 0 ? [{ type: 'text' as const, text }] : [],
+      ...attachments,
+    ]
     await call(this.connection, 'session/prompt', {
-      request: { requestId, sessionId, mode, content: [{ type: 'text', text }] },
+      request: { requestId, sessionId, mode, content },
     })
     return requestId
+  }
+
+  /**
+   * Upload one file for a Session. The Host stages it and returns a receipt that
+   * the next prompt of that Session names.
+   * @param sessionId - the Session that will receive the file.
+   * @param name - the file's display name.
+   * @param data - the file's bytes.
+   * @returns the receipt id, and the stored file name.
+   */
+  async uploadFile(sessionId: string, name: string, data: Uint8Array): Promise<{ receiptId: string; name: string }> {
+    const value = await call<{ receiptId: string; file?: { name?: string } }>(this.connection, 'fileUploads/upload', {
+      agent: sessionId,
+      request: { data: Buffer.from(data).toString('base64'), name },
+    })
+    return { receiptId: value.receiptId, name: value.file?.name ?? name }
   }
 
   /**
@@ -319,7 +351,9 @@ export function summaryOf(value: unknown): SessionSummary | undefined {
     : undefined
   const permissions = values !== undefined && isRecord(values['permissions']) ? values['permissions'] : undefined
   const permission = permissions !== undefined && typeof permissions['currentValue'] === 'string' ? permissions['currentValue'] : undefined
+  const questions = values !== undefined && values['userQuestions'] !== undefined ? values['userQuestions'] : undefined
   return {
+    ...questions === undefined ? {} : { userQuestions: questions },
     ...permission === undefined ? {} : { permission },
     ...model === undefined ? {} : { model },
     sessionId: value['sessionId'],

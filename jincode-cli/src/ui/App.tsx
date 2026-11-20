@@ -13,6 +13,8 @@ import { glyph, palette } from './theme.ts'
 import { Panel } from './Panel.tsx'
 import { editField, eraseBack, isErase, type KeyLike } from './keys.ts'
 import { handlePanelKey } from './panel-keys.ts'
+import { approvalKey, reduceQuestion, startCard, type CardState } from './interaction-keys.ts'
+import { approvalCard, questionCard, windowCard } from './interaction-view.ts'
 
 const toneColor: Record<Tone, string> = {
   text: '',
@@ -34,6 +36,7 @@ const HINTS = [
   'Ctrl+O modelo',
   'Ctrl+G claves',
   'Ctrl+F buscar',
+  'Ctrl+U adjuntar',
   'Ctrl+Q salir',
 ]
 
@@ -87,7 +90,14 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
   const [pendingPreset, setPendingPreset] = useState<string | undefined>(undefined)
   const [editingItem, setEditingItem] = useState<string | undefined>(undefined)
   const [effortIndex, setEffortIndex] = useState(0)
+  const [card, setCard] = useState<{ key: string; state: CardState } | undefined>(undefined)
   const runningNow = state.transcript.running
+  // The first pending question or approval of the active Session takes the keys and the body until it is answered.
+  const current = state.interactions.find(item => item.sessionId === state.activeId)
+  const elsewhere = state.interactions.length - (current === undefined ? 0 : 1)
+  const cardState: CardState | undefined = current === undefined || current.kind !== 'question'
+    ? undefined
+    : card?.key === current.key ? card.state : startCard(current)
 
   // A finished turn may have changed the queue or the goal: refresh the panel once.
   const [wasRunning, setWasRunning] = useState(runningNow)
@@ -129,6 +139,34 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     }
     if (key.ctrl && input === 'c') {
       if (running) void controller.cancel()
+      return
+    }
+    if (current !== undefined) {
+      if (current.kind === 'approval') {
+        const decision = approvalKey(input, key)
+        if (decision === 'allow') void controller.decideApproval(current, 'allowed-once')
+        else if (decision === 'reject') void controller.decideApproval(current, 'rejected')
+        else if (decision === 'delegate') void controller.delegateInteraction(current)
+        return
+      }
+      if (cardState === undefined) return
+      const next = reduceQuestion(current, cardState, input, key)
+      if (next.action.kind === 'delegate') {
+        void controller.delegateInteraction(current)
+        return
+      }
+      if (next.action.kind === 'submit') {
+        const sent = next.state
+        setCard({ key: current.key, state: sent })
+        void controller.answerQuestion(current, next.action.answers).then(() => {
+          // A failed send leaves the question pending; unlock the card so it can be retried.
+          if (controller.snapshot().interactions.some(item => item.key === current.key)) {
+            setCard({ key: current.key, state: { ...sent, sending: false } })
+          }
+        })
+        return
+      }
+      setCard({ key: current.key, state: next.state })
       return
     }
     if (key.escape) {
@@ -188,6 +226,13 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     }
     if (key.ctrl && input === 'b') {
       void controller.fork()
+      return
+    }
+    if (key.ctrl && input === 'u') {
+      if (state.activeId === undefined) return
+      setField(emptyBuffer())
+      setListCursor(0)
+      controller.setOverlay('attach')
       return
     }
     if (key.ctrl && input === 'p') {
@@ -265,6 +310,22 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
       return
     }
 
+    if (overlay === 'attach') {
+      if (key.return) {
+        const path = textOf(field)
+        if (path.trim().length > 0) {
+          setField(emptyBuffer())
+          void controller.attachFile(path)
+        }
+      } else if (key.upArrow) setListCursor(cursor => Math.max(0, cursor - 1))
+      else if (key.downArrow) setListCursor(cursor => Math.min(Math.max(0, state.attachments.length - 1), cursor + 1))
+      else if (key.ctrl && input === 'd') {
+        controller.removeAttachment(listCursor)
+        setListCursor(cursor => Math.max(0, Math.min(cursor, state.attachments.length - 2)))
+      } else setField(editField(field, input, key))
+      return
+    }
+
     if (overlay === 'search') {
       const query = textOf(field)
       if (key.return) {
@@ -316,9 +377,13 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
 
   const sidebarLines = (width: number): StyledLine[] => sessionRows(state.sessions, state.activeId, width, now).flatMap(row => row.lines)
 
-  const status = running ? `${glyph.spinner[Math.floor(now / 120) % glyph.spinner.length]} trabajando` : `${glyph.idle} listo`
+  const attachNote = state.attachments.length > 0 ? ` · adjuntos ${state.attachments.length}` : ''
+  const status = (running ? `${glyph.spinner[Math.floor(now / 120) % glyph.spinner.length]} trabajando` : `${glyph.idle} listo`) + attachNote
 
-  const mainBody = renderOverlayOrConversation({
+  const cardLines = current === undefined ? undefined
+    : current.kind === 'approval' ? approvalCard(current, layoutRule.mainWidth - 2)
+      : cardState !== undefined ? questionCard(current, cardState, layoutRule.mainWidth - 2) : undefined
+  const mainBody = cardLines !== undefined ? <Lines lines={windowCard(cardLines, bodyHeight)} /> : renderOverlayOrConversation({
     state,
     field,
     listCursor,
@@ -333,6 +398,8 @@ export function App({ controller, hostLabel }: AppProps): React.ReactElement {
     pendingPreset,
     editingItem,
     effortIndex,
+    elsewhere,
+    interactive: cardLines !== undefined,
   })
 
   return (
@@ -401,11 +468,19 @@ interface MainArgs {
   pendingPreset: string | undefined
   editingItem: string | undefined
   effortIndex: number
+  /** Pending questions or approvals of other Sessions. */
+  elsewhere: number
+  /** Whether a question or approval card is on screen. */
+  interactive: boolean
 }
 
 function renderOverlayOrConversation(args: MainArgs): React.ReactElement {
   const { state } = args
   const noticeLines = state.notice !== undefined && state.overlay === 'none' ? wrapText(state.notice, args.width) : []
+  const elsewhereLines = args.elsewhere > 0 && state.overlay === 'none' && !args.interactive
+    ? wrapText(`⚠ ${args.elsewhere} pregunta o aprobación en otra sesión · Ctrl+K`, args.width)
+    : []
+  noticeLines.push(...elsewhereLines)
   const inner = { ...args, height: Math.max(1, args.height - noticeLines.length) }
   const body = (() => {
     switch (state.overlay) {
@@ -413,6 +488,7 @@ function renderOverlayOrConversation(args: MainArgs): React.ReactElement {
       case 'models': return modelsOverlay(inner)
       case 'keys': return keysOverlay(inner)
       case 'rename': return renameOverlay(inner)
+      case 'attach': return attachOverlay(inner)
       case 'search': return searchOverlay(inner)
       case 'help': return helpOverlay(inner.width)
       case 'panel': return <Panel state={state} width={inner.width} height={inner.height} cursor={inner.panelCursor} field={inner.field} editing={inner.editingItem} pendingPreset={inner.pendingPreset} />
@@ -526,6 +602,33 @@ function renameOverlay({ field, width, height }: MainArgs): React.ReactElement {
   return <Lines lines={lines.slice(0, height)} />
 }
 
+function attachOverlay({ state, field, listCursor, width, height }: MainArgs): React.ReactElement {
+  const lines: StyledLine[] = [
+    { text: 'Adjuntar al próximo mensaje', tone: 'brand', bold: true },
+    { text: 'Escribe una ruta y Enter · ↑↓ elige · Ctrl+D quita · Esc cierra', tone: 'faint' },
+  ]
+  for (const line of wrapText(`${textOf(field)}▌`, width)) lines.push({ text: line, tone: 'text' })
+  if (state.attachments.length === 0) {
+    for (const line of wrapText('Sin adjuntos. Las imágenes (png, jpg, webp, gif) van en línea; otros archivos se suben al agente.', width)) {
+      lines.push({ text: line, tone: 'muted' })
+    }
+  }
+  state.attachments.forEach((draft, index) => {
+    const cursor = index === listCursor
+    const kind = draft.part.type === 'image' ? 'imagen' : 'archivo'
+    for (const line of wrapText(`${cursor ? '›' : ' '} ${draft.name} · ${kind} · ${sizeText(draft.size)}`, width)) {
+      lines.push({ text: line, tone: cursor ? 'brand' : 'text', bold: cursor })
+    }
+  })
+  return <Lines lines={lines.slice(0, height)} />
+}
+
+function sizeText(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
+}
+
 function searchOverlay({ state, field, listCursor, width, height }: MainArgs): React.ReactElement {
   const lines: StyledLine[] = [
     { text: 'Buscar en sesiones', tone: 'brand', bold: true },
@@ -554,6 +657,8 @@ function helpOverlay(width: number): React.ReactElement {
     ['Ctrl+G', 'claves de los proveedores'],
     ['Ctrl+F', 'buscar en las sesiones'],
     ['Ctrl+R', 'renombrar la sesión'],
+    ['Ctrl+U', 'adjuntar un archivo al próximo mensaje (Ctrl+D quita el seleccionado)'],
+    ['Pregunta o aprobación', 'Espacio elige · Enter confirma · Tab cambia · y aprueba · n rechaza · Esc delega'],
     ['Ctrl+B', 'bifurcar la sesión'],
     ['Esc · Ctrl+C', 'cancelar el turno en curso'],
     ['PgUp · PgDn', 'desplazar la conversación'],
