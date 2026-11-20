@@ -170,6 +170,10 @@ comando. La capa de perfil resuelve esto de forma explícita:
 
 ## Notas y solución de problemas
 
+- **`start.sh: ... ya está en uso` o `EADDRINUSE 127.0.0.1:3080`:** otro servidor JinCode sigue en
+  marcha (un `start.sh` anterior en otra sesión de Termux). Ciérralo con Ctrl+C en esa sesión, o
+  arranca en otro puerto con `PORT=3081 bash termux/start.sh` y usa esa misma URL en `jincode.sh`.
+  La URL con el token es la que imprime el servidor que sí está arrancado.
 - **`Unsupported engine`:** Node < 24.9. Funciona con advertencia; para eliminarla,
   actualiza Node (24.9+).
 - **Build lento / agotamiento de memoria:** añade swap (ver arriba) y revisa que el build

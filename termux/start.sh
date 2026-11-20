@@ -42,6 +42,15 @@ export DSH_TELEMETRY_DISABLED="${DSH_TELEMETRY_DISABLED:-1}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-3080}"
 
+# A server from an earlier run may still hold the port. Fail here with the fix, instead of
+# letting the harness report EADDRINUSE after its plugins have started.
+if (exec 3<>"/dev/tcp/$HOST/$PORT") 2>/dev/null; then
+  echo "start.sh: $HOST:$PORT ya está en uso: probablemente hay un JinCode anterior en marcha." >&2
+  echo "  Ciérralo (en la sesión de Termux donde se ejecutó, con Ctrl+C) o usa otro puerto:" >&2
+  echo "    PORT=3081 bash termux/start.sh" >&2
+  exit 1
+fi
+
 # The key is entered in the browser (Models page), not required in the environment.
 STORE_FILE="${DSH_HOME:-$HOME/.dsh}/.credentials.yaml"
 if [[ -z "${JINCODE_API_KEY:-}" ]] && ! { [[ -f "$STORE_FILE" ]] && grep -q '^[[:space:]]*JINCODE_API_KEY:' "$STORE_FILE"; }; then
