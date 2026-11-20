@@ -47,6 +47,7 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío) |
 | Programaciones | ↑↓ listan las tareas programadas. Solo lectura |
 | Espacios | Lista en vivo (stream `workspace/follow`): cada espacio con sus sesiones, después «Sin espacio» y «Archivadas». `n` crea un espacio con la ruta escrita (vacío = espacio predeterminado). En un espacio: `r` renombra, `x` lo quita (dos veces; sus archivos y sesiones se conservan), `[` `]` lo suben o bajan. En una sesión: `p` fija o desfija, `a` archiva o restaura (una sesión con turno en curso no se archiva), `[` `]` la mueven dentro de su espacio |
+| Archivos | Explora la carpeta raíz del espacio de la sesión activa (`workspaceFiles/list`). Enter abre una carpeta o un archivo (en páginas de 40 líneas, `[` `]` pasan página); Backspace sube, o cierra la página o la búsqueda. `/` busca por nombre (`workspaceFiles/search`); `h` incluye los ocultos en las búsquedas; `r` recarga. Si el Host corta la lista, se avisa |
 | Habilidades | ↑↓ listan las habilidades de la sesión con su descripción |
 
 Tarjetas de la sesión activa (aparecen sobre el compositor):
@@ -137,7 +138,8 @@ controlador en `tests/controller.test.ts`.
 | 6 | Preguntas del agente (`userQuestions`: respuesta por `$events`), adjuntos (`fileUploads/upload`, imagen en el prompt), aprobaciones (`approval/request`) | Hecho en vivo: respuesta a pregunta, aprobar una vez, rechazar. Pendiente en vivo: espera temporizada (`userQuestions/attachWait`) y adjuntos |
 | 7a | Ajustes editables (`settings/mutate` por campo con la revisión leída, `settings/replace` por sección sin secretos) | Hecho, probado en vivo |
 | 7b | Espacio de trabajo: crear, renombrar, quitar, ordenar, fijar y archivar (`workspace/*`, stream `workspace/follow`) | Hecho, probado en vivo |
-| 7c | Archivos del espacio (`workspaceFiles/*`: listar, leer, buscar) y terminal (`terminal/*`) | Pendiente |
+| 7c | Archivos del espacio (`workspaceFiles/*`: listar, leer por páginas, buscar) | Hecho, probado en vivo |
+| 7d | Terminal (`terminal/*`: shells, crear, adjuntar, renombrar, cerrar) | Pendiente |
 | 8 | Programaciones (`schedule/create`, `edit`, `run`, `history`); metas editar (`goals/edit`); subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
@@ -149,6 +151,10 @@ apuntando al modelo de prueba; sin esa variable el turno falla con «Connection 
 Fase 7a, verificación en vivo: editar un campo (8 → 9) con revisión 1 → 2 y quitarlo con `u`
 (vuelve a 8, sin ✎); `settings/replace` con la revisión actual se acepta y con una revisión
 obsoleta el Host responde «changed since it was read».
+
+Fase 7c, verificación en vivo: listado de la raíz con carpetas primero; búsqueda `editorconfig`
+sin ocultos (sin resultados, como indica el Host) y con `h` (1 resultado); apertura del archivo en
+su página con numeración.
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

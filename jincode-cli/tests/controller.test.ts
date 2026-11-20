@@ -75,6 +75,11 @@ function respond(method: string, args: any): unknown {
     case 'workspace/unpinSession': state.pinnedSessionIds = state.pinnedSessionIds.filter(id => id !== args.sessionId); return { pinnedSessionIds: state.pinnedSessionIds }
     case 'workspace/archiveSession': state.archivedSessionIds = [...state.archivedSessionIds, args.sessionId]; return { archivedSessionIds: state.archivedSessionIds }
     case 'workspace/unarchiveSession': state.archivedSessionIds = state.archivedSessionIds.filter(id => id !== args.sessionId); return { archivedSessionIds: state.archivedSessionIds }
+    case 'workspaceFiles/list':
+      if (args.path === '.') return { path: '', entries: [{ name: 'README.md', type: 'file', size: 120 }, { name: 'src', type: 'directory' }] }
+      return { path: args.path, entries: [{ name: 'a.ts', type: 'file', size: 10 }] }
+    case 'workspaceFiles/read': return { offset: args.range.offset, lines: 2, eof: args.range.offset > 1, text: 'primera\nsegunda', absolutePath: '/x', version: 'v' }
+    case 'workspaceFiles/search': return { matches: [{ path: 'src/a.ts', type: 'file' }] }
     case 'settings/describe': return { writable: state.settings.writable, namespaces: [{ ns: 'agent', revision: state.settings.revision, applies: 'next-turn', value: state.settings.value, user: state.settings.user, secrets: [] }] }
     case 'settings/mutate': {
       if (args.expectedRevision !== state.settings.revision) throw new Error('settings revision conflict: the entry changed')
@@ -415,6 +420,60 @@ test('settings: a read-only profile sends nothing and says so; a replace is refu
     assert.match(app.snapshot().panel.note ?? '', /solo lectura/)
   } finally {
     state.settings = { writable: false, revision: 2, value: { maxSteps: 40, label: 'a' }, user: { maxSteps: 40 } }
+    app.dispose()
+  }
+})
+
+test('files: the listing sorts folders first; a folder opens, its parent goes back, a file shows a page', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.setSection('files')
+    const root = app.snapshot().panel.files
+    assert.deepEqual(root?.entries.map(entry => entry.name), ['src', 'README.md'])
+    assert.equal(root?.sessionId, 's-1')
+    assert.equal(state.calls.findLast(call => call.method === 'workspaceFiles/list')?.args.workspaceFileScopeId, 's-1')
+
+    await app.browseFiles('src')
+    assert.equal(app.snapshot().panel.files?.path, 'src')
+    await app.upFiles()
+    assert.equal(app.snapshot().panel.files?.path, '')
+
+    await app.openFile('README.md')
+    const page = app.snapshot().panel.files?.page
+    assert.equal(page?.text, 'primera\nsegunda')
+    const reads = (): number => state.calls.filter(call => call.method === 'workspaceFiles/read').length
+    await app.pageFile(1)
+    assert.equal(app.snapshot().panel.files?.page?.offset, 41, 'the next page starts after the first')
+    const atEnd = reads()
+    await app.pageFile(1)
+    assert.equal(reads(), atEnd, 'an eof page does not ask for another page')
+    app.closeFileView()
+    assert.equal(app.snapshot().panel.files?.page, undefined)
+  } finally {
+    app.dispose()
+  }
+})
+
+test('files: a search replaces the listing with its hits; a blank query is not sent', async () => {
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.setSection('files')
+    const searches = state.calls.filter(call => call.method === 'workspaceFiles/search').length
+    await app.searchFiles('   ')
+    assert.equal(state.calls.filter(call => call.method === 'workspaceFiles/search').length, searches)
+    await app.searchFiles('a')
+    const search = state.calls.findLast(call => call.method === 'workspaceFiles/search')
+    assert.equal(search?.args.request.query, 'a')
+    assert.deepEqual(app.snapshot().panel.files?.matches?.items, [{ path: 'src/a.ts', type: 'file' }])
+    await app.toggleHidden()
+    const again = state.calls.findLast(call => call.method === 'workspaceFiles/search')
+    assert.equal(again?.args.request.includeHidden, true, 'the hidden switch reaches the Host and the search runs again')
+    assert.equal(app.snapshot().panel.files?.includeHidden, true)
+    app.closeFileView()
+    assert.equal(app.snapshot().panel.files?.matches, undefined)
+  } finally {
     app.dispose()
   }
 })

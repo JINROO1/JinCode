@@ -7,6 +7,8 @@ import { editField, type KeyLike } from './keys.ts'
 import { panelRowCount, panelSelection, CONFIRMED_PRESETS } from './Panel.tsx'
 import { PANEL_SECTIONS, groupableSessions, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
 import { groupRows } from '../app/workspace-model.ts'
+import { fileRowsOf } from '../app/file-model.ts'
+import { isErase } from './keys.ts'
 import {
   canReplaceSection,
   fieldEditKey,
@@ -179,6 +181,60 @@ export function handlePanelKey(keys: PanelKeys): void {
       }
       setEditingItem(fieldEditKey(selected.ns, selected.key))
       setField(bufferOf(selected.secret ? '' : fieldText(selected.value)))
+    }
+    return
+  }
+
+  if (section === 'files') {
+    const view = state.panel.files
+    if (editingItem !== undefined) {
+      if (!key.return) {
+        setField(editField(field, input, key))
+        return
+      }
+      const text = textOf(field)
+      setEditingItem(undefined)
+      setField(emptyBuffer())
+      setCursor(0)
+      void controller.searchFiles(text)
+      return
+    }
+    if (view === undefined) return
+    if (view.page !== undefined) {
+      if (input === '[') void controller.pageFile(-1)
+      else if (input === ']') void controller.pageFile(1)
+      else if (isErase(key, input)) controller.closeFileView()
+      return
+    }
+    if (isErase(key, input)) {
+      setCursor(0)
+      if (view.matches !== undefined) controller.closeFileView()
+      else void controller.upFiles()
+      return
+    }
+    if (input === '/') {
+      setEditingItem('search')
+      setField(emptyBuffer())
+      return
+    }
+    if (input === 'r') {
+      void controller.reloadFiles()
+      return
+    }
+    if (input === 'h') {
+      void controller.toggleHidden()
+      return
+    }
+    if (key.return) {
+      const row = fileRowsOf(view)[cursor]
+      if (row === undefined) return
+      if (row.kind === 'up') {
+        setCursor(0)
+        void controller.upFiles()
+      } else if (row.type === 'directory') {
+        setCursor(0)
+        void controller.browseFiles(row.path)
+      } else if (row.type === 'file') void controller.openFile(row.path)
     }
     return
   }

@@ -14,6 +14,7 @@ import { type StyledLine, type Tone } from './format.ts'
 import { palette } from './theme.ts'
 import { fieldSummary, settingsFields } from '../app/settings-model.ts'
 import { groupRows } from '../app/workspace-model.ts'
+import { fileRowsOf, sizeLabel } from '../app/file-model.ts'
 
 /** Human labels for the section tabs. */
 export const SECTION_LABEL: Record<PanelSection, string> = {
@@ -21,6 +22,7 @@ export const SECTION_LABEL: Record<PanelSection, string> = {
   permissions: 'Permisos',
   settings: 'Ajustes',
   workspaces: 'Espacios',
+  files: 'Archivos',
   goals: 'Metas',
   schedule: 'Programaciones',
   skills: 'Habilidades',
@@ -71,6 +73,7 @@ export function panelRowCount(state: AppState): number {
     case 'permissions': return panel.presets?.options.length ?? 0
     case 'settings': return panel.settings === undefined ? 0 : settingsFields(panel.settings).length
     case 'workspaces': return panel.workspaces === undefined ? 0 : groupRows(panel.workspaces, groupableSessions(state.sessions)).length
+    case 'files': return panel.files === undefined || panel.files.page !== undefined ? 0 : fileRowsOf(panel.files).length
     case 'schedule': return panel.schedules?.length ?? 0
     case 'skills': return panel.skills?.length ?? 0
     case 'goals': return 0
@@ -269,6 +272,42 @@ export function sectionView(props: PanelProps): SectionView {
       } else {
         hint('n crear espacio · ↑↓ elegir una fila')
       }
+      return { body, focus, footer }
+    }
+    case 'files': {
+      if (state.activeId === undefined) return { body: [{ text: 'Abre una sesión para ver los archivos de su espacio.', tone: 'muted' }], focus, footer }
+      const view = panel.files
+      if (view === undefined) return { body: [{ text: 'Cargando los archivos…', tone: 'muted' }], focus, footer }
+      if (view.page !== undefined) {
+        const page = view.page
+        const last = page.offset + Math.max(0, page.lines - 1)
+        add(`${page.path.length > 0 ? page.path : '.'} · líneas ${page.offset}–${last}${page.eof ? ' (fin)' : ''}`, 'accent', { bold: true })
+        if (page.lines === 0) add('La página está fuera del archivo.', 'muted')
+        else page.text.split('\n').forEach((line, index) => add(`${String(page.offset + index).padStart(4)} │ ${line}`, 'text'))
+        hint('[ página anterior · ] página siguiente · Backspace vuelve al listado')
+        return { body, focus, footer }
+      }
+      const rows = fileRowsOf(view)
+      if (view.matches !== undefined) {
+        add(`Resultados para «${view.matches.query}»${view.includeHidden ? ' (con ocultos)' : ''}`, 'accent', { bold: true })
+        if (view.matches.truncated) add('El Host cortó la lista: afina la búsqueda para ver el resto.', 'warning')
+      }
+      else add(`Carpeta: ${view.path.length > 0 ? view.path : '(raíz del espacio)'}`, 'accent', { bold: true })
+      if (rows.length === 0) add(view.matches !== undefined ? 'Ningún archivo coincide.' : 'La carpeta está vacía.', 'muted')
+      rows.forEach((item, index) => {
+        const active = index === cursor
+        const pointer = active ? '›' : ' '
+        if (item.kind === 'up') row(`${pointer} ../`, active)
+        else if (item.kind === 'match') row(`${pointer} ${item.type === 'directory' ? '▸' : ' '} ${item.path}${item.type === 'directory' ? '/' : ''}`, active)
+        else {
+          const label = item.type === 'directory' ? `${item.name}/` : item.type === 'file' ? `${item.name}  ${sizeLabel(item.size)}`.trimEnd() : `${item.name} (otro)`
+          row(`${pointer} ${item.type === 'directory' ? '▸' : ' '} ${label}`, active)
+        }
+      })
+      if (editing === 'search') {
+        notice('Buscar por nombre · Enter busca · Esc cancela', 'accent')
+        notice(`${textOf(field)}▌`, 'text')
+      } else hint(`Enter abrir · Backspace subir · / buscar · h ocultos en búsquedas (${view.includeHidden ? 'sí' : 'no'}) · r recargar`)
       return { body, focus, footer }
     }
     case 'goals': {

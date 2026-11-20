@@ -17,6 +17,7 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     presets: undefined,
     settings: undefined,
     workspaces: undefined,
+    files: undefined,
     goal: undefined,
     schedules: undefined,
     skills: undefined,
@@ -433,4 +434,44 @@ test('workspaces: n creates (blank path = default); x needs a second press; p an
   assert.ok(calls.some(call => call === 'workspaceAction {"kind":"pin","sessionId":"s-1","pinned":true}'))
   press('a')
   assert.ok(calls.some(call => call === 'workspaceAction {"kind":"archive","sessionId":"s-1","archived":true}'))
+})
+
+test('files: Enter opens a folder, Backspace goes up, / searches; in a page, [ ] turn pages and Backspace closes it', () => {
+  const entries = [{ name: 'src', type: 'directory' as const, size: undefined }, { name: 'a.md', type: 'file' as const, size: 10 }]
+  const { controller, calls } = fakeController()
+  const state = stateWith({ section: 'files', files: { sessionId: 's-1', path: '', entries, page: undefined, matches: undefined } as never })
+  const store = { field: emptyBuffer(), editing: undefined as string | undefined, cursor: 0 }
+  const press = (input: string, key: PanelKeys['key'] = {}): void => {
+    handlePanelKey({
+      input, key, state, controller,
+      field: store.field, setField: value => { store.field = value },
+      cursor: store.cursor, setCursor: value => { store.cursor = typeof value === 'function' ? value(store.cursor) : value },
+      pendingPreset: undefined, setPendingPreset: () => {},
+      editingItem: store.editing, setEditingItem: value => { store.editing = value },
+    })
+  }
+  press('', { return: true })
+  assert.ok(calls.includes('browseFiles "src"'), 'Enter on a folder lists it')
+  press('', { backspace: true })
+  assert.ok(calls.includes('upFiles'), 'Backspace goes up')
+  press('/')
+  assert.equal(store.editing, 'search')
+  press('a')
+  press('', { return: true })
+  assert.ok(calls.includes('searchFiles "a"'))
+  assert.equal(store.editing, undefined)
+
+  const paged = stateWith({ section: 'files', files: { sessionId: 's-1', path: '', entries, page: { path: 'a.md', offset: 1, lines: 1, eof: false, text: 'x' }, matches: undefined } as never })
+  const pagedPress = (input: string, key: PanelKeys['key'] = {}): void => {
+    handlePanelKey({
+      input, key, state: paged, controller,
+      field: store.field, setField: () => {}, cursor: 0, setCursor: () => {},
+      pendingPreset: undefined, setPendingPreset: () => {},
+      editingItem: undefined, setEditingItem: () => {},
+    })
+  }
+  pagedPress(']')
+  assert.ok(calls.includes('pageFile 1'))
+  pagedPress('', { backspace: true })
+  assert.ok(calls.includes('closeFileView'))
 })

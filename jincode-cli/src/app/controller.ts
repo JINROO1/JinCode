@@ -29,6 +29,7 @@ import type {
 } from './interaction-rules.ts'
 import { emptyTranscript, type Transcript } from '../transcript/reducer.ts'
 import { canReplaceSection } from './settings-model.ts'
+import { PAGE_LINES, childPath, parentPath, type FilesView } from './file-model.ts'
 import { applyWorkspaceFrame, emptyWorkspaces, groupRows, sessionMove, workspaceMove, type GroupableSession, type WorkspaceView } from './workspace-model.ts'
 import {
   PanelClient,
@@ -64,7 +65,7 @@ export type SettingAction =
   | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
 
 /** Sections of the panel, in the order Tab cycles through them. */
-export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'goals', 'schedule', 'skills'] as const
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'goals', 'schedule', 'skills'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
@@ -106,6 +107,8 @@ export interface PanelState {
   readonly settings: readonly SettingsRow[] | undefined
   /** The Workspace registry, pins and archives; undefined until the baseline arrives. */
   readonly workspaces: WorkspaceView | undefined
+  /** The files of the active Session's workspace; undefined until the section loads. */
+  readonly files: FilesView | undefined
   /** `null` when the Session has no goal; undefined before the first read. */
   readonly goal: GoalView | null | undefined
   readonly schedules: readonly ScheduleRow[] | undefined
@@ -177,7 +180,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, goal: undefined, schedules: undefined, skills: undefined, note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, skills: undefined, note: undefined },
     interactions: [],
     attachments: [],
     overlay: 'none',
@@ -567,6 +570,15 @@ export class AppController {
         case 'workspaces':
           // The stream started by `start` keeps this section current.
           return
+        case 'files': {
+          if (sessionId === undefined) {
+            this.patchPanel({ files: undefined })
+            return
+          }
+          const previous = this.state.panel.files
+          await this.browseFiles(previous?.sessionId === sessionId ? previous.path : '')
+          return
+        }
         case 'goals': {
           if (sessionId === undefined) return
           this.patchPanel({ goal: (await this.panelClient.goal(sessionId)) ?? null })
@@ -687,6 +699,93 @@ export class AppController {
         }
       }
     })
+  }
+
+  /**
+   * List one directory of the active Session's workspace and clear any open page or search.
+   * @param path - the directory, relative to the root; empty for the root.
+   */
+  async browseFiles(path: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      const listing = await this.panelClient.listFiles(sessionId, path)
+      const includeHidden = this.state.panel.files?.includeHidden ?? false
+      this.patchPanel({ files: { sessionId, path: listing.path, entries: listing.entries, page: undefined, matches: undefined, includeHidden } })
+    })
+  }
+
+  /**
+   * Open one file of the active Session's workspace on its first page.
+   * @param path - the file, relative to the root.
+   * @param offset - the first line to show.
+   */
+  async openFile(path: string, offset = 1): Promise<void> {
+    const view = this.state.panel.files
+    const sessionId = this.state.activeId
+    if (view === undefined || sessionId === undefined) return
+    await this.attempt(async () => {
+      const page = await this.panelClient.readFile(sessionId, path, offset, PAGE_LINES)
+      this.patchPanel({ files: { ...view, page, matches: undefined } })
+    })
+  }
+
+  /**
+   * Move through the open file by one page, forward or back.
+   * @param direction - -1 for the page before, +1 for the page after.
+   */
+  async pageFile(direction: -1 | 1): Promise<void> {
+    const page = this.state.panel.files?.page
+    if (page === undefined) return
+    if (direction > 0 && page.eof) return
+    const offset = Math.max(1, page.offset + direction * PAGE_LINES)
+    await this.openFile(page.path, offset)
+  }
+
+  /**
+   * Search file names in the active Session's workspace and show the hits in place of the listing.
+   * @param query - the text to find; blank queries are ignored.
+   */
+  async searchFiles(query: string): Promise<void> {
+    const view = this.state.panel.files
+    const sessionId = this.state.activeId
+    const text = query.trim()
+    if (view === undefined || sessionId === undefined || text.length === 0) return
+    await this.attempt(async () => {
+      const result = await this.panelClient.searchFiles(sessionId, text, view.includeHidden)
+      this.patchPanel({ files: { ...view, page: undefined, matches: { query: text, items: result.items, truncated: result.truncated } } })
+      const count = result.truncated ? `más de ${result.items.length}` : `${result.items.length}`
+      this.patchPanel({ note: result.items.length === 0 ? `sin resultados para «${text}»` : `${count} resultado(s) para «${text}»` })
+    })
+  }
+
+  /** Include or leave out hidden files in searches; a search on screen runs again. */
+  async toggleHidden(): Promise<void> {
+    const view = this.state.panel.files
+    if (view === undefined) return
+    this.patchPanel({ files: { ...view, includeHidden: !view.includeHidden } })
+    const query = view.matches?.query
+    if (query !== undefined) await this.searchFiles(query)
+  }
+
+  /** Leave the open file or the search results and show the listing again. */
+  closeFileView(): void {
+    const view = this.state.panel.files
+    if (view === undefined) return
+    this.patchPanel({ files: { ...view, page: undefined, matches: undefined } })
+  }
+
+  /** Go to the directory above the current one; the root stays the root. */
+  async upFiles(): Promise<void> {
+    const view = this.state.panel.files
+    if (view === undefined || view.path.length === 0) return
+    await this.browseFiles(parentPath(view.path))
+  }
+
+  /** Re-read the listing of the current directory. */
+  async reloadFiles(): Promise<void> {
+    const view = this.state.panel.files
+    await this.browseFiles(view?.path ?? '')
   }
 
   /**

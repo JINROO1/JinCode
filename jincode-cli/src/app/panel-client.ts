@@ -5,6 +5,7 @@
  */
 import { call, type RemoteConnection, type RemoteMux } from '../wire/remote.ts'
 import { normalizeWorkspace, type WorkspaceRow } from './workspace-model.ts'
+import { normalizeListing, normalizeMatches, normalizePage, type FilePage, type FileEntry, type SearchResult } from './file-model.ts'
 
 /** One message waiting for the running turn. */
 export interface QueueRow {
@@ -217,6 +218,42 @@ export class PanelClient {
   async createWorkspace(path: string): Promise<WorkspaceRow | undefined> {
     const value = await call<{ workspace?: unknown }>(this.connection, 'workspace/create', { request: { path } })
     return normalizeWorkspace(value?.workspace)
+  }
+
+  /**
+   * List one directory of a Session's workspace.
+   * @param sessionId - the Session whose workspace is browsed.
+   * @param path - the directory, relative to the root; empty for the root.
+   * @returns the directory and its children, sorted for display.
+   */
+  async listFiles(sessionId: string, path: string): Promise<{ path: string; entries: FileEntry[] }> {
+    return normalizeListing(await call(this.connection, 'workspaceFiles/list', { workspaceFileScopeId: sessionId, path: path.length === 0 ? '.' : path }))
+  }
+
+  /**
+   * Read one page of a text file in the Session's workspace.
+   * @param sessionId - the Session.
+   * @param path - the file, relative to the root.
+   * @param offset - the first line of the page.
+   * @param limit - the most lines the page may hold.
+   * @returns the page.
+   */
+  async readFile(sessionId: string, path: string, offset: number, limit: number): Promise<FilePage> {
+    return normalizePage(await call(this.connection, 'workspaceFiles/read', { workspaceFileScopeId: sessionId, path, range: { offset, limit } }), path)
+  }
+
+  /**
+   * Search file names in the Session's workspace, honouring the Host's ignore rules.
+   * @param sessionId - the Session.
+   * @param query - a case-insensitive substring.
+   * @param includeHidden - whether hidden files are searched too.
+   * @returns the hits, and whether the Host cut the list.
+   */
+  async searchFiles(sessionId: string, query: string, includeHidden: boolean): Promise<SearchResult> {
+    return normalizeMatches(await call(this.connection, 'workspaceFiles/search', {
+      workspaceFileScopeId: sessionId,
+      request: { query, excludedPaths: [], includeHidden, respectGitignore: true },
+    }))
   }
 
   /** Create or reuse the default Workspace, for the first-use flow. */
