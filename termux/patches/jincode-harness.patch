@@ -119,7 +119,7 @@ index 6b903d52..10b9dbae 100644
 +   * sets this to false: the Remote API, the entry URL with its access token, and
 +   * the rest of the runtime stay mounted; only the page files are not served.
 +   */
-+  serveFrontend: boolean
++  serveFrontend?: boolean
    /**
     * Canonical HTTP(S) root to advertise in the printed and opened URL,
     * `DSH_WEB_URL`, and `webApp.getAdvertisedUrl()`, which supplies the Web GUI
@@ -136,7 +136,7 @@ index 6b903d52..10b9dbae 100644
    const appRootUrl = (): string => publicUrl ?? ctx.webServer.getOrigin()
    ctx.provide('webApp', { getAdvertisedUrl: appRootUrl } satisfies WebApp)
 -  ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
-+  if (config.serveFrontend) ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
++  if (config.serveFrontend !== false) ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
    if (config.surfaceContext) {
      ctx.inject(['shellEnv'], (runtimeCtx) => {
        runtimeCtx.shellEnv.register({
