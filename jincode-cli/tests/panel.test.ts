@@ -91,6 +91,9 @@ const replies: Record<string, unknown> = {
   'settings/describe': { writable: false, namespaces: [{ ns: 'agent', revision: 1, applies: 'next-turn', value: {} }] },
   'goals/get': { id: 'goal-1', revision: 4, objective: 'x', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
   'goals/create': { ref: { id: 'goal-2', revision: 1 } },
+  'agentPresets/list': { presets: [{ id: 'standard', order: 1, isDefault: true }, { id: 'minimal', order: 2, isDefault: false }] },
+  'agentPresets/read': { agentPreset: 'minimal', content: '- id: persona\n' },
+  'agentPresets/select': 'minimal',
   'subagents/prompt': { messageId: 'm-1' },
   'subagents/interruptByUser': { accepted: true },
   'goals/edit': { id: 'goal-1', revision: 5, objective: 'nuevo', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
@@ -240,6 +243,15 @@ test('a subagent message carries a fresh request identity, the delivery and the 
   await client.interruptChild('child-1')
   assert.equal(last().method, 'subagents/interruptByUser')
   assert.deepEqual(last().args, { childSessionId: 'child-1' })
+})
+
+test('agent presets are read from the roster; the declaration and the selection name the preset', async () => {
+  assert.deepEqual(await client.agentPresets(), [{ id: 'standard', isDefault: true }, { id: 'minimal', isDefault: false }])
+  assert.equal(last().method, 'agentPresets/list')
+  assert.equal(await client.agentPresetYaml('minimal'), '- id: persona\n')
+  assert.deepEqual(last().args, { agentPreset: 'minimal' })
+  assert.equal(await client.selectAgentPreset('s-1', 'minimal'), 'minimal')
+  assert.deepEqual(last().args, { agentId: 's-1', agentPreset: 'minimal' })
 })
 
 test('skills are read with their wrapper', async () => {

@@ -129,6 +129,9 @@ function respond(method: string, args: any, raw: any = args): unknown {
     case 'goals/create':
       state.goal = { id: 'goal-1', revision: 1, objective: args.objective, phase: 'active', roundsStarted: 0, maxGoalRounds: 8 }
       return { ref: { id: 'goal-1', revision: 1 } }
+    case 'agentPresets/list': return { presets: [{ id: 'standard', order: 1, isDefault: true }, { id: 'minimal', order: 2, isDefault: false }] }
+    case 'agentPresets/read': return { agentPreset: args.agentPreset, content: `- id: ${args.agentPreset}\n` }
+    case 'agentPresets/select': return args.agentPreset
     case 'subagents/prompt': return { messageId: `m-${args.childSessionId}` }
     case 'subagents/interruptByUser': return { accepted: true }
     case 'goals/edit': {
@@ -687,6 +690,37 @@ test('schedules: create, edit, pause, run, read the deliveries, delete; a stale 
     assert.equal(app.snapshot().panel.note, 'programación eliminada')
   } finally {
     state.schedules = [{ id: 'sch-1', kind: 'every', title: 'Resumen diario', prompt: 'resume', everySeconds: 3600, target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T09:00:00.000Z', updatedAt: '2026-11-19T09:00:00.000Z', history: [] as unknown[] }] as any[]
+    app.dispose()
+  }
+})
+
+test('agents: a preset is selected only for a blank Session; a new Session takes it; the declaration toggles', async () => {
+  const app = new AppController(connection)
+  const session = state.sessions[0] as any
+  const wasBlank = session.blank
+  try {
+    await app.start()
+    await app.openPanel('agents')
+    assert.deepEqual(app.snapshot().panel.agentPresets?.map(item => item.id), ['standard', 'minimal'])
+    session.blank = false
+    await app.refreshSessions()
+    await app.selectAgentPreset('minimal')
+    assert.equal(state.calls.some(call => call.method === 'agentPresets/select'), false, 'a started Session is not changed')
+    assert.match(app.snapshot().panel.note ?? '', /ya empezó/)
+    session.blank = true
+    await app.refreshSessions()
+    await app.selectAgentPreset('minimal')
+    const select = state.calls.findLast(call => call.method === 'agentPresets/select')
+    assert.deepEqual(select?.args, { agentId: 's-1', agentPreset: 'minimal' })
+    assert.equal(app.snapshot().panel.note, 'agente seleccionado: minimal')
+    await app.newSessionWithPreset('minimal')
+    assert.equal(state.calls.findLast(call => call.method === 'session/create')?.args.request.agentPreset, 'minimal')
+    await app.toggleAgentYaml('minimal')
+    assert.equal(app.snapshot().panel.agentYaml?.content, '- id: minimal\n')
+    await app.toggleAgentYaml('minimal')
+    assert.equal(app.snapshot().panel.agentYaml, undefined, 'the same key again closes it')
+  } finally {
+    session.blank = wasBlank
     app.dispose()
   }
 })

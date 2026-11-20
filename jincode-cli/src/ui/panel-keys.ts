@@ -51,6 +51,22 @@ export interface ScheduleEditor {
 }
 
 /**
+ * Keys of the agents section. Enter selects the preset for the active Session
+ * (the Host allows it only before the first turn), n opens a new Session with it,
+ * and v shows or hides its declaration.
+ * @param keys - the panel keys.
+ */
+function handleAgentKey(keys: PanelKeys): void {
+  const { input, key, state, controller, cursor } = keys
+  if (key.ctrl) return
+  const preset = state.panel.agentPresets?.[cursor]
+  if (preset === undefined) return
+  if (key.return) void controller.selectAgentPreset(preset.id)
+  else if (input === 'n') void controller.newSessionWithPreset(preset.id)
+  else if (input === 'v') void controller.toggleAgentYaml(preset.id)
+}
+
+/**
  * Keys of the subagents section. Enter opens the subagent under the cursor, or
  * sends the typed message when there is one. Ctrl+X interrupts it and Ctrl+D
  * switches the delivery between the next turn (queue) and the current step (steer).
@@ -469,6 +485,11 @@ export function handlePanelKey(keys: PanelKeys): void {
 
   if (section === 'schedule') {
     handleScheduleKey({ ...keys, section })
+    return
+  }
+
+  if (section === 'agents') {
+    handleAgentKey(keys)
     return
   }
 

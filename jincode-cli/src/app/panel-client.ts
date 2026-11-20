@@ -54,6 +54,12 @@ export interface GoalView {
   readonly maxGoalRounds: number
 }
 
+/** One agent preset the Host offers: the composition a Session runs. */
+export interface AgentPresetRow {
+  readonly id: string
+  readonly isDefault: boolean
+}
+
 /** One skill the Session can use. */
 export interface SkillRow {
   readonly name: string
@@ -461,6 +467,32 @@ export class PanelClient {
     await call(this.connection, 'subagents/interruptByUser', { childSessionId })
   }
 
+  /** @returns the agent presets the Host offers. */
+  async agentPresets(): Promise<AgentPresetRow[]> {
+    return normalizeAgentPresets(await call(this.connection, 'agentPresets/list', {}))
+  }
+
+  /**
+   * Read the declaration of a preset, as YAML, for viewing only.
+   * @param agentPreset - the preset.
+   * @returns the YAML text.
+   */
+  async agentPresetYaml(agentPreset: string): Promise<string> {
+    const value = await call<unknown>(this.connection, 'agentPresets/read', { agentPreset })
+    return isRecord(value) && typeof value['content'] === 'string' ? value['content'] : ''
+  }
+
+  /**
+   * Select a preset for a Session that has not started its first turn.
+   * @param agentId - the Session.
+   * @param agentPreset - the preset.
+   * @returns the preset the Host selected.
+   */
+  async selectAgentPreset(agentId: string, agentPreset: string): Promise<string> {
+    const value = await call<unknown>(this.connection, 'agentPresets/select', { agentId, agentPreset })
+    return typeof value === 'string' ? value : agentPreset
+  }
+
   /** @returns how many ended tasks the Host removed. */
   async clearEndedSchedules(): Promise<number> {
     const value = await call<unknown>(this.connection, 'schedule/deleteInactive', {})
@@ -482,6 +514,21 @@ function textOfBlocks(content: unknown): string {
   return content
     .flatMap(block => isRecord(block) && block['type'] === 'text' && typeof block['text'] === 'string' ? [block['text']] : [])
     .join('\n')
+}
+
+/**
+ * Read the agent presets the Host offers.
+ * @param value - the `agentPresets/list` result.
+ * @returns the presets in the Host's order.
+ */
+export function normalizeAgentPresets(value: unknown): AgentPresetRow[] {
+  if (!isRecord(value) || !Array.isArray(value['presets'])) return []
+  const rows: AgentPresetRow[] = []
+  for (const item of value['presets']) {
+    if (!isRecord(item) || typeof item['id'] !== 'string') continue
+    rows.push({ id: item['id'], isDefault: item['isDefault'] === true })
+  }
+  return rows
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

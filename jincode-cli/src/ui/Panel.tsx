@@ -52,6 +52,7 @@ export const SECTION_LABEL: Record<PanelSection, string> = {
   goals: 'Metas',
   schedule: 'Programaciones',
   skills: 'Habilidades',
+  agents: 'Agentes',
   subagents: 'Subagentes',
 }
 
@@ -108,6 +109,7 @@ export function panelRowCount(state: AppState): number {
     case 'terminals': return panel.terminals === undefined ? 0 : panel.terminals.choosing ? panel.terminals.shells?.length ?? 0 : panel.terminals.items?.length ?? 0
     case 'schedule': return panel.schedules?.length ?? 0
     case 'skills': return panel.skills?.length ?? 0
+    case 'agents': return panel.agentPresets?.length ?? 0
     case 'subagents': return subagentsOf(state.sessions, state.activeId).length
     case 'goals': return 0
   }
@@ -412,6 +414,22 @@ export function sectionView(props: PanelProps): SectionView {
         }
       })
       hint('n nueva · Enter/e editar · p pausar o reanudar · r ejecutar ahora · h entregas · x eliminar (dos veces) · c quitar terminadas (dos veces)')
+      return { body, focus, footer }
+    }
+    case 'agents': {
+      if (panel.agentPresets === undefined) return { body: [{ text: 'Cargando los agentes…', tone: 'muted' }], focus, footer }
+      if (panel.agentPresets.length === 0) add('No hay agentes disponibles.', 'muted')
+      panel.agentPresets.forEach((item, index) => {
+        row(`${index === cursor ? '›' : ' '} ${item.id}${item.isDefault ? ' · por defecto' : ''}`, index === cursor)
+      })
+      const shown = panel.agentYaml
+      if (shown !== undefined) {
+        const lines = shown.content.split('\n')
+        add(`Declaración de ${shown.preset} (${lines.length} líneas):`, 'brand', { bold: true })
+        for (const line of lines.slice(0, 14)) add(`  ${line}`, 'muted')
+        if (lines.length > 14) add(`  … ${lines.length - 14} líneas más`, 'faint')
+      }
+      hint('Enter selecciona el agente en la sesión activa (solo si está vacía) · n abre una sesión nueva con él · v muestra su declaración')
       return { body, focus, footer }
     }
     case 'subagents': {

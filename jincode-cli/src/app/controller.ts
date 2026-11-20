@@ -39,6 +39,7 @@ import { ScreenBuffer, type ScreenLine } from './terminal-screen.ts'
 import { applyWorkspaceFrame, emptyWorkspaces, groupRows, sessionMove, workspaceMove, type GroupableSession, type WorkspaceView } from './workspace-model.ts'
 import {
   PanelClient,
+  type AgentPresetRow,
   type GoalView,
   type PresetView,
   type QueueRow,
@@ -71,7 +72,7 @@ export type SettingAction =
   | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
 
 /** Sections of the panel, in the order Tab cycles through them. */
-export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'subagents'] as const
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'agents', 'subagents'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
@@ -130,6 +131,10 @@ export interface PanelState {
   readonly terminals: TerminalsView | undefined
   /** Whether a message to a subagent waits for its next turn (`queue`) or targets its nearest step (`steer`). */
   readonly subagentDelivery: 'queue' | 'steer'
+  /** The agent presets the Host offers; undefined until the section loads. */
+  readonly agentPresets: readonly AgentPresetRow[] | undefined
+  /** The declaration of the preset being viewed, if any. */
+  readonly agentYaml: { readonly preset: string; readonly content: string } | undefined
   readonly note: string | undefined
 }
 
@@ -243,7 +248,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', agentPresets: undefined, agentYaml: undefined, note: undefined },
     interactions: [],
     terminal: undefined,
     attachments: [],
@@ -670,6 +675,10 @@ export class AppController {
           this.patchPanel({ skills: await this.panelClient.skills(sessionId) })
           return
         }
+        case 'agents': {
+          this.patchPanel({ agentPresets: await this.panelClient.agentPresets() })
+          return
+        }
         case 'subagents': {
           // The subagents are the Sessions whose parent is the active one; the Session list carries them.
           await this.refreshSessions()
@@ -1081,6 +1090,53 @@ export class AppController {
       await this.panelClient.interruptChild(childSessionId)
       this.patchPanel({ note: 'interrupción pedida al subagente' })
       await this.refreshSessions()
+    })
+  }
+
+  /**
+   * Select an agent preset for the active Session. The Host accepts it only before the first turn,
+   * so a Session that already ran is refused here with a note, and nothing is sent.
+   * @param agentPreset - the preset.
+   */
+  async selectAgentPreset(agentPreset: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    const session = this.state.sessions.find(item => item.sessionId === sessionId)
+    if (session !== undefined && !session.blank) {
+      this.patchPanel({ note: 'esta sesión ya empezó; crea una sesión nueva para usar otro agente' })
+      return
+    }
+    await this.attempt(async () => {
+      const selected = await this.panelClient.selectAgentPreset(sessionId, agentPreset)
+      this.patchPanel({ note: `agente seleccionado: ${selected}` })
+    })
+  }
+
+  /**
+   * Create a Session that runs the chosen preset and open it.
+   * @param agentPreset - the preset.
+   */
+  async newSessionWithPreset(agentPreset: string): Promise<void> {
+    await this.attempt(async () => {
+      const id = await this.sessions.createSession({ agentPreset })
+      await this.refreshSessions()
+      await this.open(id)
+      this.patchPanel({ note: `sesión nueva con el agente ${agentPreset}` })
+    })
+  }
+
+  /**
+   * Show or hide the declaration of a preset. Showing it again closes it.
+   * @param agentPreset - the preset.
+   */
+  async toggleAgentYaml(agentPreset: string): Promise<void> {
+    if (this.state.panel.agentYaml?.preset === agentPreset) {
+      this.patchPanel({ agentYaml: undefined })
+      return
+    }
+    await this.attempt(async () => {
+      const content = await this.panelClient.agentPresetYaml(agentPreset)
+      this.patchPanel({ agentYaml: { preset: agentPreset, content } })
     })
   }
 

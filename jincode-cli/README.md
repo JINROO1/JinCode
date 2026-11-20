@@ -46,6 +46,7 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Ajustes | ↑↓ eligen un campo (agrupado por espacio de nombres). Enter edita el valor; Enter guarda, Esc cancela. `u` quita el valor propio (✎). `j` edita la sección entera en JSON (no disponible si tiene secretos). Con el perfil de solo lectura no se escribe nada |
 | Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `e` edita el objetivo (Enter guarda, Esc cancela; sin cambios no se envía nada); `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío). Si otro cliente cambió la meta, la CLI lo avisa y la vuelve a leer |
 | Programaciones | ↑↓ listan todas las tareas, con su estado (activa, pausada, terminada, ejecutando) y su temporización. `n` crea; Enter o `e` edita; con el formulario abierto, ↑↓ cambian de campo, Enter guarda y Esc cancela. Temporizaciones: `after 600`, `every 3600`, `at 2026-12-01 09:30 Europe/Madrid`, `daily 09:00 UTC`, `weekly 09:00 UTC 1,3,5`, `cron 0 9 * * 1 UTC`, `rrule DTSTART:…\|RRULE:…`. Destinos: «sesión actual», «nueva sesión», «nueva sesión una vez». `p` pausa o reanuda; `r` ejecuta ahora; `h` lee las entregas; `x` elimina (dos veces); `c` quita las terminadas (dos veces). Una tarea terminada no se pausa |
+| Agentes | Lista los presets del Host, con el predeterminado marcado. Enter selecciona el preset en la sesión activa (`agentPresets/select`), solo si no tiene turnos: el Host lo rechaza si ya empezó. `n` abre una sesión nueva con ese preset (`session/create`). `v` muestra u oculta su declaración en YAML (`agentPresets/read`, solo lectura) |
 | Subagentes | Las sesiones hijas de la sesión activa, con «en curso» o «inactivo». Enter abre el subagente; con texto escrito, Enter lo envía (`subagents/prompt`, entrega en cola, o dirigida con Ctrl+D). Ctrl+X lo interrumpe (`subagents/interruptByUser`). Solo texto: las imágenes no se envían desde esta sección |
 | Espacios | Lista en vivo (stream `workspace/follow`): cada espacio con sus sesiones, después «Sin espacio» y «Archivadas». `n` crea un espacio con la ruta escrita (vacío = espacio predeterminado). En un espacio: `r` renombra, `x` lo quita (dos veces; sus archivos y sesiones se conservan), `[` `]` lo suben o bajan. En una sesión: `p` fija o desfija, `a` archiva o restaura (una sesión con turno en curso no se archiva), `[` `]` la mueven dentro de su espacio |
 | Archivos | Explora la carpeta raíz del espacio de la sesión activa (`workspaceFiles/list`). Enter abre una carpeta o un archivo (en páginas de 40 líneas, `[` `]` pasan página); Backspace sube, o cierra la página o la búsqueda. `/` busca por nombre (`workspaceFiles/search`); `h` incluye los ocultos en las búsquedas; `r` recarga. Si el Host corta la lista, se avisa |
@@ -146,8 +147,9 @@ controlador en `tests/controller.test.ts`.
 | 7d | Terminal (`terminal/*`: shells, crear, adjuntar a pantalla completa con acuses de entrada, renombrar, cerrar, retener, `watch` del listado) | Hecho, probado en vivo |
 | 7e | Programaciones completas (`schedule/*`): crear con siete temporizaciones y tres destinos, editar con revisión, pausar o reanudar, ejecutar, historial, eliminar y quitar terminadas | Hecho, probado en vivo |
 | 7f | Metas: editar el objetivo (`goals/edit`, con la revisión leída) | Hecho, probado en vivo |
+| 7h | Agentes: listar presets, seleccionar en una sesión vacía, sesión nueva con preset, ver la declaración (`agentPresets/*`) | Hecho, probado en vivo |
 | 7g | Subagentes: listar los hijos, enviar un mensaje (cola o dirigir), interrumpir (`subagents/*`) | Hecho; probado contra el Host con ids ausentes. Crear un subagente real no fue posible en el entorno de prueba |
-| 8 | Agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
+| 8 | Plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
 responder), aprobación `y` (la herramienta se ejecuta y el turno termina con «completado») y
@@ -187,6 +189,12 @@ subagentes.» en el servidor de prueba. Contra el Host, `subagents/interruptByUs
 responde `accepted: true` (no-op) y `subagents/prompt` con un id ausente responde «subagent cannot be
 resumed». El simulador de modelo no crea subagentes, así que el envío a un hijo real queda cubierto por
 las pruebas con Host simulado (`tests/controller.test.ts`, `tests/panel.test.ts`).
+
+Fase 7h, verificación en vivo: la sección «Agentes» lista `standard · por defecto`, `ptc`, `minimal`,
+`cordis`; `v` sobre `ptc` muestra su declaración («128 líneas»); Enter en una sesión vacía responde
+«agente seleccionado: ptc». Contra el Host, `agentPresets/select` en una sesión con historial responde
+«This session has already started», y con un preset desconocido «Unknown agent preset». La CLI no envía
+la selección si la sesión activa ya tiene turnos.
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

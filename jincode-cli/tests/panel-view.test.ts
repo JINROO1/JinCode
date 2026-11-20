@@ -25,6 +25,8 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     terminals: undefined,
     goal: undefined,
     subagentDelivery: 'queue',
+    agentPresets: undefined,
+    agentYaml: undefined,
     schedules: undefined,
     scheduleLimit: undefined,
     scheduleHistory: undefined,
@@ -257,7 +259,7 @@ test('Tab moves to the next section and Shift+Tab to the previous one, wrapping 
   handlePanelKey(keysFor(state, controller, { key: { tab: true } }))
   handlePanelKey(keysFor(stateWith({ section: 'subagents' }), controller, { key: { tab: true } }))
   handlePanelKey(keysFor(stateWith({ section: 'queue', queue: [] }), controller, { key: { tab: true, shift: true } }))
-  assert.deepEqual(calls, ['setSection "subagents"', 'setSection "queue"', 'setSection "subagents"'], 'the last section wraps to the first, and back')
+  assert.deepEqual(calls, ['setSection "agents"', 'setSection "queue"', 'setSection "subagents"'], 'the last section wraps to the first, and back')
 })
 
 test('goals: typing creates a goal when none exists; p, r, c and x act only on an existing one', () => {
@@ -671,6 +673,32 @@ test('subagents: the list names each child with its state, and says when there a
   }))
   assert.match(none.lastFrame() ?? '', /Esta sesión no tiene subagentes\./)
   none.unmount()
+})
+
+test('agents: Enter selects, n opens a new Session with the preset, v shows the declaration', () => {
+  const { controller, calls } = fakeController()
+  const presets = [{ id: 'standard', isDefault: true }, { id: 'minimal', isDefault: false }]
+  const harness = scheduleHarness(stateWith({ section: 'agents', agentPresets: presets }), controller)
+  handlePanelKey(keysFor(stateWith({ section: 'agents', agentPresets: presets }), controller, { input: '', key: { return: true }, cursor: 1 }))
+  assert.equal(calls.at(-1), 'selectAgentPreset "minimal"')
+  const on = (input: string) => handlePanelKey(keysFor(stateWith({ section: 'agents', agentPresets: presets }), controller, { input, key: {}, cursor: 1 }))
+  on('n')
+  assert.equal(calls.at(-1), 'newSessionWithPreset "minimal"')
+  on('v')
+  assert.equal(calls.at(-1), 'toggleAgentYaml "minimal"')
+})
+
+test('agents: the list marks the default preset, and a long declaration is cut with a count', () => {
+  const content = Array.from({ length: 20 }, (_, index) => `- id: line-${index}`).join('\n')
+  const frame = render(React.createElement(Panel, {
+    state: stateWith({ section: 'agents', agentPresets: [{ id: 'standard', isDefault: true }], agentYaml: { preset: 'standard', content } }),
+    width: 100, height: 40, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  const shown = frame.lastFrame() ?? ''
+  assert.match(shown, /› standard · por defecto/)
+  assert.match(shown, /Declaración de standard \(20 líneas\):/)
+  assert.match(shown, /… 6 líneas más/)
+  frame.unmount()
 })
 
 test('goals: e edits the objective in place; Enter sends the text, and the goal is not touched until then', () => {
