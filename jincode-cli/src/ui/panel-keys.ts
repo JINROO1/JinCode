@@ -5,7 +5,7 @@
 import { emptyBuffer, bufferOf, textOf, type Buffer } from './composer.ts'
 import { editField, type KeyLike } from './keys.ts'
 import { panelRowCount, panelSelection, CONFIRMED_PRESETS } from './Panel.tsx'
-import { PANEL_SECTIONS, groupableSessions, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
+import { PANEL_SECTIONS, groupableSessions, subagentsOf, type AppState, type AppController, type PanelSection } from '../app/controller.ts'
 import { groupRows } from '../app/workspace-model.ts'
 import {
   SCHEDULE_FIELDS,
@@ -48,6 +48,41 @@ function parseSectionText(text: string): { ok: true; value: Record<string, unkno
 export interface ScheduleEditor {
   readonly form: ScheduleForm
   readonly index: number
+}
+
+/**
+ * Keys of the subagents section. Enter opens the subagent under the cursor, or
+ * sends the typed message when there is one. Ctrl+X interrupts it and Ctrl+D
+ * switches the delivery between the next turn (queue) and the current step (steer).
+ * Control keys are used so that typing a message never triggers an action.
+ * @param keys - the panel keys.
+ */
+function handleSubagentKey(keys: PanelKeys): void {
+  const { input, key, state, controller, field, setField, cursor } = keys
+  if (key.ctrl && input === 'x') {
+    const child = subagentsOf(state.sessions, state.activeId)[cursor]
+    if (child !== undefined) void controller.interruptChild(child.sessionId)
+    return
+  }
+  if (key.ctrl && input === 'd') {
+    controller.toggleSubagentDelivery()
+    return
+  }
+  if (key.ctrl) return
+  const child = subagentsOf(state.sessions, state.activeId)[cursor]
+  if (child === undefined) return
+  if (key.return) {
+    const text = textOf(field)
+    if (text.trim().length === 0) {
+      void controller.openFromList(child.sessionId)
+      controller.setOverlay('none')
+      return
+    }
+    setField(emptyBuffer())
+    void controller.sendToChild(child.sessionId, text)
+    return
+  }
+  setField(editField(field, input, key))
 }
 
 /**
@@ -434,6 +469,11 @@ export function handlePanelKey(keys: PanelKeys): void {
 
   if (section === 'schedule') {
     handleScheduleKey({ ...keys, section })
+    return
+  }
+
+  if (section === 'subagents') {
+    handleSubagentKey(keys)
     return
   }
 

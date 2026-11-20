@@ -71,7 +71,7 @@ export type SettingAction =
   | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
 
 /** Sections of the panel, in the order Tab cycles through them. */
-export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills'] as const
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'subagents'] as const
 export type PanelSection = (typeof PANEL_SECTIONS)[number]
 
 /** One provider route as the Host lists it. */
@@ -128,6 +128,8 @@ export interface PanelState {
   readonly skills: readonly SkillRow[] | undefined
   /** The Session's terminals and the shell chooser; undefined until the section loads. */
   readonly terminals: TerminalsView | undefined
+  /** Whether a message to a subagent waits for its next turn (`queue`) or targets its nearest step (`steer`). */
+  readonly subagentDelivery: 'queue' | 'steer'
   readonly note: string | undefined
 }
 
@@ -195,6 +197,17 @@ export function matchesTitleOrFolder(session: SessionSummary, query: string): bo
  * @param session - the summary, if known.
  * @returns a display title.
  */
+/**
+ * The subagents of a Session: the Sessions whose parent it is, most recently updated first as the list sorts them.
+ * @param sessions - the Session list.
+ * @param parentId - the active Session.
+ * @returns the children.
+ */
+export function subagentsOf(sessions: readonly SessionSummary[], parentId: string | undefined): SessionSummary[] {
+  if (parentId === undefined) return []
+  return sessions.filter(session => session.parentSessionId === parentId)
+}
+
 export function titleOf(session: SessionSummary | undefined): string {
   if (session === undefined) return 'Nueva sesión'
   if (session.title !== undefined) return session.title
@@ -230,7 +243,7 @@ export class AppController {
     keyCursor: 0,
     searchResults: [],
     searchNote: undefined,
-    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, note: undefined },
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', note: undefined },
     interactions: [],
     terminal: undefined,
     attachments: [],
@@ -657,6 +670,11 @@ export class AppController {
           this.patchPanel({ skills: await this.panelClient.skills(sessionId) })
           return
         }
+        case 'subagents': {
+          // The subagents are the Sessions whose parent is the active one; the Session list carries them.
+          await this.refreshSessions()
+          return
+        }
       }
     })
   }
@@ -1041,6 +1059,34 @@ export class AppController {
       this.patchPanel({ note: `${count} terminadas eliminadas` })
       await this.loadSection('schedule')
     })
+  }
+
+  /**
+   * Send a message to a subagent of the active Session.
+   * @param childSessionId - the subagent.
+   * @param text - the message; blank messages are ignored.
+   */
+  async sendToChild(childSessionId: string, text: string): Promise<void> {
+    const message = text.trim()
+    if (message.length === 0) return
+    await this.attempt(async () => {
+      await this.panelClient.sendToChild(childSessionId, message, this.state.panel.subagentDelivery)
+      this.patchPanel({ note: this.state.panel.subagentDelivery === 'steer' ? 'mensaje dirigido al paso en curso del subagente' : 'mensaje encolado para el subagente' })
+    })
+  }
+
+  /** Interrupt a subagent. The Host accepts an idle one as a no-op. */
+  async interruptChild(childSessionId: string): Promise<void> {
+    await this.attempt(async () => {
+      await this.panelClient.interruptChild(childSessionId)
+      this.patchPanel({ note: 'interrupción pedida al subagente' })
+      await this.refreshSessions()
+    })
+  }
+
+  /** Switch the delivery of the next subagent message between queue and steer. */
+  toggleSubagentDelivery(): void {
+    this.patchPanel({ subagentDelivery: this.state.panel.subagentDelivery === 'queue' ? 'steer' : 'queue' })
   }
 
   /** Refresh the Session list, most recently updated first. */

@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer } from 'ws'
 import { connect, type RemoteConnection } from '../src/wire/remote.ts'
-import { AppController, keyRefFor, matchesTitleOrFolder, titleOf } from '../src/app/controller.ts'
+import { subagentsOf, AppController, keyRefFor, matchesTitleOrFolder, titleOf } from '../src/app/controller.ts'
 import { normalizeCatalog, summaryOf } from '../src/app/session-client.ts'
 
 // A fake Host with the response shapes observed on the real server.
@@ -129,6 +129,8 @@ function respond(method: string, args: any, raw: any = args): unknown {
     case 'goals/create':
       state.goal = { id: 'goal-1', revision: 1, objective: args.objective, phase: 'active', roundsStarted: 0, maxGoalRounds: 8 }
       return { ref: { id: 'goal-1', revision: 1 } }
+    case 'subagents/prompt': return { messageId: `m-${args.childSessionId}` }
+    case 'subagents/interruptByUser': return { accepted: true }
     case 'goals/edit': {
       if (!state.goal) throw new Error('no goal')
       if (raw.ref.revision !== state.goal.revision) throw new Error(`stale goal ref "${raw.ref.id}" revision ${raw.ref.revision}; current is "${state.goal.id}" revision ${state.goal.revision}`)
@@ -685,6 +687,36 @@ test('schedules: create, edit, pause, run, read the deliveries, delete; a stale 
     assert.equal(app.snapshot().panel.note, 'programación eliminada')
   } finally {
     state.schedules = [{ id: 'sch-1', kind: 'every', title: 'Resumen diario', prompt: 'resume', everySeconds: 3600, target: { kind: 'session', sessionId: 's-1' }, involvedSessionIds: ['s-1'], status: 'active', createdAt: '2026-11-19T09:00:00.000Z', updatedAt: '2026-11-19T09:00:00.000Z', history: [] as unknown[] }] as any[]
+    app.dispose()
+  }
+})
+
+test('subagents: the children of the active Session are listed; a message and an interrupt reach the child', async () => {
+  const child = { sessionId: 's-child', updatedAt: 1, running: true, blank: false, cwd: '/tmp', parentSessionId: 's-1', origin: 'subagent', projections: { values: { title: 'Revisor' } } }
+  state.sessions.push(child as any)
+  const app = new AppController(connection)
+  try {
+    await app.start()
+    await app.openPanel('subagents')
+    const children = subagentsOf(app.snapshot().sessions, 's-1')
+    assert.deepEqual(children.map(item => item.sessionId), ['s-child'])
+    await app.sendToChild('s-child', '   ')
+    assert.equal(state.calls.some(call => call.method === 'subagents/prompt'), false, 'a blank message is not sent')
+    await app.sendToChild('s-child', ' revisa esto ')
+    const sent = state.calls.findLast(call => call.method === 'subagents/prompt')
+    assert.equal(sent?.args.request.childSessionId, 's-child')
+    assert.equal(sent?.args.request.delivery, 'queue')
+    assert.deepEqual(sent?.args.request.content, [{ type: 'text', text: 'revisa esto' }])
+    assert.equal(app.snapshot().panel.note, 'mensaje encolado para el subagente')
+    app.toggleSubagentDelivery()
+    assert.equal(app.snapshot().panel.subagentDelivery, 'steer')
+    await app.sendToChild('s-child', 'ahora')
+    assert.equal(state.calls.findLast(call => call.method === 'subagents/prompt')?.args.request.delivery, 'steer')
+    await app.interruptChild('s-child')
+    assert.equal(state.calls.findLast(call => call.method === 'subagents/interruptByUser')?.args.childSessionId, 's-child')
+    assert.equal(app.snapshot().panel.note, 'interrupción pedida al subagente')
+  } finally {
+    state.sessions = state.sessions.filter(item => item.sessionId !== 's-child')
     app.dispose()
   }
 })

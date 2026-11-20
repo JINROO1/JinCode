@@ -91,6 +91,8 @@ const replies: Record<string, unknown> = {
   'settings/describe': { writable: false, namespaces: [{ ns: 'agent', revision: 1, applies: 'next-turn', value: {} }] },
   'goals/get': { id: 'goal-1', revision: 4, objective: 'x', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
   'goals/create': { ref: { id: 'goal-2', revision: 1 } },
+  'subagents/prompt': { messageId: 'm-1' },
+  'subagents/interruptByUser': { accepted: true },
   'goals/edit': { id: 'goal-1', revision: 5, objective: 'nuevo', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
   'goals/pause': {},
   'goals/resume': {},
@@ -220,6 +222,24 @@ test('schedule writes send the request the form built, and history asks for a pa
   assert.equal(records[0]?.prompt, 'p')
   assert.equal(await client.clearEndedSchedules(), 2)
   assert.equal(last().method, 'schedule/deleteInactive')
+})
+
+test('a subagent message carries a fresh request identity, the delivery and the browser zone; interrupts name the child', async () => {
+  const messageId = await client.sendToChild('child-1', 'revisa esto', 'steer')
+  assert.equal(messageId, 'm-1')
+  assert.equal(last().method, 'subagents/prompt')
+  const request = last().args.request as Record<string, unknown>
+  assert.match(String(request['requestId']), /^[0-9a-f-]{36}$/, 'the identity is minted by the client')
+  assert.deepEqual({ ...request, requestId: undefined }, {
+    requestId: undefined,
+    childSessionId: 'child-1',
+    delivery: 'steer',
+    content: [{ type: 'text', text: 'revisa esto' }],
+    clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  })
+  await client.interruptChild('child-1')
+  assert.equal(last().method, 'subagents/interruptByUser')
+  assert.deepEqual(last().args, { childSessionId: 'child-1' })
 })
 
 test('skills are read with their wrapper', async () => {

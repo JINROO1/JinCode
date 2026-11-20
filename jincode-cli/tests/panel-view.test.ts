@@ -24,6 +24,7 @@ function stateWith(panel: Partial<PanelState>, extra: Partial<AppState> = {}): A
     files: undefined,
     terminals: undefined,
     goal: undefined,
+    subagentDelivery: 'queue',
     schedules: undefined,
     scheduleLimit: undefined,
     scheduleHistory: undefined,
@@ -254,8 +255,9 @@ test('Tab moves to the next section and Shift+Tab to the previous one, wrapping 
   const { controller, calls } = fakeController()
   const state = stateWith({ section: 'skills', skills: [] })
   handlePanelKey(keysFor(state, controller, { key: { tab: true } }))
+  handlePanelKey(keysFor(stateWith({ section: 'subagents' }), controller, { key: { tab: true } }))
   handlePanelKey(keysFor(stateWith({ section: 'queue', queue: [] }), controller, { key: { tab: true, shift: true } }))
-  assert.deepEqual(calls, ['setSection "queue"', 'setSection "skills"'])
+  assert.deepEqual(calls, ['setSection "subagents"', 'setSection "queue"', 'setSection "subagents"'], 'the last section wraps to the first, and back')
 })
 
 test('goals: typing creates a goal when none exists; p, r, c and x act only on an existing one', () => {
@@ -633,6 +635,42 @@ test('schedules: c asks twice before removing the ended ones; p, r and h act on 
   harness.press('h')
   assert.equal(calls.filter(call => call.startsWith('runSchedule')).length, 1)
   assert.equal(calls.filter(call => call.startsWith('loadScheduleHistory')).length, 1)
+})
+
+test('subagents: Enter opens the child or sends the typed message; Ctrl+X interrupts and Ctrl+D switches the delivery', () => {
+  const { controller, calls } = fakeController()
+  const child = { sessionId: 's-child', updatedAt: 1, running: true, blank: false, cwd: '/tmp', parentSessionId: 's-1', title: 'Revisor' }
+  const state = stateWith({ section: 'subagents' }, { sessions: [{ ...child }] as any })
+  const harness = scheduleHarness(state, controller)
+  harness.press('', { return: true })
+  assert.ok(calls.includes('openFromList "s-child"'), 'Enter on an empty message opens the child')
+  harness.type('hola')
+  harness.press('', { return: true })
+  assert.equal(calls.at(-1), 'sendToChild "s-child" "hola"')
+  harness.press('x', { ctrl: true })
+  assert.equal(calls.at(-1), 'interruptChild "s-child"')
+  harness.press('d', { ctrl: true })
+  assert.equal(calls.at(-1), 'toggleSubagentDelivery')
+  harness.type('i')
+  assert.equal(calls.filter(call => call.startsWith('interruptChild')).length, 1, 'a typed letter never interrupts')
+})
+
+test('subagents: the list names each child with its state, and says when there are none', () => {
+  const child = { sessionId: 's-child', updatedAt: 1, running: false, blank: false, cwd: '/tmp', parentSessionId: 's-1', title: 'Revisor' }
+  const full = render(React.createElement(Panel, {
+    state: stateWith({ section: 'subagents', subagentDelivery: 'steer' }, { sessions: [child as any] }),
+    width: 100, height: 20, cursor: 0, field: bufferOf('uno'), editing: undefined, pendingPreset: undefined,
+  }))
+  const shown = full.lastFrame() ?? ''
+  assert.match(shown, /› Revisor · inactivo/)
+  assert.match(shown, /Entrega: dirigir al paso en curso/)
+  assert.match(shown, /Mensaje: uno▌/)
+  full.unmount()
+  const none = render(React.createElement(Panel, {
+    state: stateWith({ section: 'subagents' }), width: 100, height: 12, cursor: 0, field: emptyBuffer(), editing: undefined, pendingPreset: undefined,
+  }))
+  assert.match(none.lastFrame() ?? '', /Esta sesión no tiene subagentes\./)
+  none.unmount()
 })
 
 test('goals: e edits the objective in place; Enter sends the text, and the goal is not touched until then', () => {

@@ -3,6 +3,7 @@
  * permission presets, Host settings (read-only), goals, schedules and skills.
  * Every reply is normalized here, so the UI never reads raw wire shapes.
  */
+import { randomUUID } from 'node:crypto'
 import { call, type RemoteConnection, type RemoteMux } from '../wire/remote.ts'
 import { normalizeWorkspace, type WorkspaceRow } from './workspace-model.ts'
 import { normalizeListing, normalizeMatches, normalizePage, type FilePage, type FileEntry, type SearchResult } from './file-model.ts'
@@ -435,6 +436,29 @@ export class PanelClient {
    */
   async scheduleHistory(id: string): Promise<ScheduleRecord[]> {
     return normalizeRecords(await call(this.connection, 'schedule/history', { request: { id, limit: 20 } }))
+  }
+
+  /**
+   * Send a text message to a subagent. The request identity is minted here, before the call.
+   * @param childSessionId - the subagent's Session.
+   * @param text - the message.
+   * @param delivery - `queue` waits for the next turn; `steer` targets the nearest step.
+   * @returns the id of the message the subagent's inbox accepted.
+   */
+  async sendToChild(childSessionId: string, text: string, delivery: 'queue' | 'steer'): Promise<string> {
+    const clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    const value = await call<unknown>(this.connection, 'subagents/prompt', {
+      request: { requestId: randomUUID(), childSessionId, delivery, content: [{ type: 'text', text }], clientTimeZone },
+    })
+    return isRecord(value) && typeof value['messageId'] === 'string' ? value['messageId'] : ''
+  }
+
+  /**
+   * Interrupt a subagent on the user's behalf. The Host accepts an idle or absent target as a no-op.
+   * @param childSessionId - the subagent's Session.
+   */
+  async interruptChild(childSessionId: string): Promise<void> {
+    await call(this.connection, 'subagents/interruptByUser', { childSessionId })
   }
 
   /** @returns how many ended tasks the Host removed. */

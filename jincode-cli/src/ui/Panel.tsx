@@ -7,7 +7,7 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import type { AppState, PanelSection } from '../app/controller.ts'
-import { PANEL_SECTIONS, groupableSessions } from '../app/controller.ts'
+import { PANEL_SECTIONS, groupableSessions, subagentsOf, titleOf } from '../app/controller.ts'
 import { packHints, truncate, wrapText } from './layout.ts'
 import { type Buffer, textOf } from './composer.ts'
 import { type StyledLine, type Tone } from './format.ts'
@@ -52,6 +52,7 @@ export const SECTION_LABEL: Record<PanelSection, string> = {
   goals: 'Metas',
   schedule: 'Programaciones',
   skills: 'Habilidades',
+  subagents: 'Subagentes',
 }
 
 /** Spanish labels for the goal phases the Host reports; unknown phases show as they are. */
@@ -107,6 +108,7 @@ export function panelRowCount(state: AppState): number {
     case 'terminals': return panel.terminals === undefined ? 0 : panel.terminals.choosing ? panel.terminals.shells?.length ?? 0 : panel.terminals.items?.length ?? 0
     case 'schedule': return panel.schedules?.length ?? 0
     case 'skills': return panel.skills?.length ?? 0
+    case 'subagents': return subagentsOf(state.sessions, state.activeId).length
     case 'goals': return 0
   }
 }
@@ -410,6 +412,20 @@ export function sectionView(props: PanelProps): SectionView {
         }
       })
       hint('n nueva · Enter/e editar · p pausar o reanudar · r ejecutar ahora · h entregas · x eliminar (dos veces) · c quitar terminadas (dos veces)')
+      return { body, focus, footer }
+    }
+    case 'subagents': {
+      if (state.activeId === undefined) return { body: [{ text: 'Abre una sesión para ver sus subagentes.', tone: 'muted' }], focus, footer }
+      const children = subagentsOf(state.sessions, state.activeId)
+      if (children.length === 0) add('Esta sesión no tiene subagentes.', 'muted')
+      children.forEach((item, index) => {
+        row(`${index === cursor ? '›' : ' '} ${titleOf(item)} · ${item.running ? 'en curso' : 'inactivo'}`, index === cursor)
+      })
+      if (children.length > 0) {
+        add(`Entrega: ${panel.subagentDelivery === 'steer' ? 'dirigir al paso en curso' : 'cola, para el turno siguiente'}`, 'muted')
+        add(`Mensaje: ${textOf(field)}▌`, 'text')
+        hint('Enter abre el subagente, o envía el mensaje escrito · Ctrl+X interrumpe · Ctrl+D cambia cola/dirigir')
+      }
       return { body, focus, footer }
     }
     case 'skills': {
