@@ -41,7 +41,7 @@ function broadcastTerminals(): void {
   for (const send of state.terminalWatchers.values()) send(state.terminals)
 }
 
-function respond(method: string, args: any): unknown {
+function respond(method: string, args: any, raw: any = args): unknown {
   switch (method) {
     case 'session/list': return { items: state.sessions }
     case 'session/create': return { sessionId: 's-new' }
@@ -129,6 +129,12 @@ function respond(method: string, args: any): unknown {
     case 'goals/create':
       state.goal = { id: 'goal-1', revision: 1, objective: args.objective, phase: 'active', roundsStarted: 0, maxGoalRounds: 8 }
       return { ref: { id: 'goal-1', revision: 1 } }
+    case 'goals/edit': {
+      if (!state.goal) throw new Error('no goal')
+      if (raw.ref.revision !== state.goal.revision) throw new Error(`stale goal ref "${raw.ref.id}" revision ${raw.ref.revision}; current is "${state.goal.id}" revision ${state.goal.revision}`)
+      state.goal = { ...state.goal, objective: raw.request.objective, revision: state.goal.revision + 1 }
+      return state.goal
+    }
     case 'goals/pause': if (state.goal) state.goal = { ...state.goal, phase: 'paused', revision: state.goal.revision + 1 }; return {}
     case 'goals/resume': if (state.goal) state.goal = { ...state.goal, phase: 'active', revision: state.goal.revision + 1 }; return {}
     case 'goals/complete': if (state.goal) state.goal = { ...state.goal, phase: 'complete', revision: state.goal.revision + 1 }; return {}
@@ -193,7 +199,7 @@ before(async () => {
     if (terminalNeedsAgent && body.payload.args.agentId === undefined) {
       result = { ok: false, error: { code: 'gateway/arguments-invalid', message: `args fields do not match the descriptor: missing "agentId"` } }
     } else try {
-      result = { ok: true, value: respond(method, body.payload.args.request ?? body.payload.args) }
+      result = { ok: true, value: respond(method, body.payload.args.request ?? body.payload.args, body.payload.args) }
     } catch (error) {
       result = { ok: false, error: { code: 'test/fake-failed', message: String(error) } }
     }
@@ -693,17 +699,37 @@ test('goal flow: create, pause, resume, complete, clear; each step reads the goa
     assert.equal(state.calls.some(call => call.method === 'goals/create' && call.args.request.objective === ''), false, 'a blank objective is not sent')
     await app.createGoal('  terminar el informe  ')
     assert.equal(app.snapshot().panel.goal?.objective, 'terminar el informe')
+    await app.editGoal('   ')
+    assert.equal(app.snapshot().panel.note, 'el objetivo no puede estar vacío')
+    await app.editGoal('terminar el informe')
+    assert.equal(app.snapshot().panel.note, 'sin cambios')
+    assert.equal(state.calls.some(call => call.method === 'goals/edit'), false, 'blank and unchanged objectives are not sent')
+    await app.editGoal('  terminar el informe final  ')
+    assert.equal(app.snapshot().panel.goal?.objective, 'terminar el informe final')
+    assert.equal(app.snapshot().panel.note, 'meta editada')
+    const edit = state.calls.findLast(call => call.method === 'goals/edit')
+    assert.equal(edit?.args.agentId, 's-1')
+    assert.deepEqual(edit?.args.request, { objective: 'terminar el informe final' })
+    // Another client changes the goal first: the stale revision is refused, the goal is read again, nothing is lost.
+    const stale = app.snapshot().panel.goal
+    assert.ok(stale)
+    state.goal = { ...(state.goal as any), revision: (state.goal as any).revision + 1, objective: 'cambiado en otro lado' }
+    await app.editGoal('mi cambio')
+    assert.equal(app.snapshot().panel.note, 'la meta cambió desde que la leíste; se volvió a leer')
+    assert.equal(app.snapshot().panel.goal?.objective, 'cambiado en otro lado', 'the fresh goal is shown')
+    assert.equal(app.snapshot().error, undefined, 'a stale edit is a note, not an error')
     await app.goalAction('pause')
     assert.equal(app.snapshot().panel.goal?.phase, 'paused')
     await app.goalAction('resume')
     assert.equal(app.snapshot().panel.goal?.phase, 'active')
     await app.goalAction('complete')
     assert.equal(app.snapshot().panel.goal?.phase, 'complete')
+    const readRevision = app.snapshot().panel.goal?.revision
     await app.clearGoal()
     assert.equal(app.snapshot().panel.goal, null)
     const clear = state.calls.findLast(call => call.method === 'goals/clear')
     assert.equal(clear?.args.agentId, 's-1')
-    assert.equal(clear?.args.ref.revision, 4)
+    assert.equal(clear?.args.ref.revision, readRevision, 'clear names the revision it read')
   } finally {
     state.goal = null
     app.dispose()

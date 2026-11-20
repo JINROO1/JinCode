@@ -91,6 +91,7 @@ const replies: Record<string, unknown> = {
   'settings/describe': { writable: false, namespaces: [{ ns: 'agent', revision: 1, applies: 'next-turn', value: {} }] },
   'goals/get': { id: 'goal-1', revision: 4, objective: 'x', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
   'goals/create': { ref: { id: 'goal-2', revision: 1 } },
+  'goals/edit': { id: 'goal-1', revision: 5, objective: 'nuevo', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 },
   'goals/pause': {},
   'goals/resume': {},
   'goals/complete': {},
@@ -188,6 +189,9 @@ test('goal reads, creation and transitions pass the Session and the revision', a
   assert.equal(last().method, 'goals/resume')
   await client.goalAction('s-1', goal, 'complete')
   assert.equal(last().method, 'goals/complete')
+  await client.editGoal('s-1', goal, 'nuevo objetivo')
+  assert.equal(last().method, 'goals/edit')
+  assert.deepEqual(last().args, { agentId: 's-1', ref: { id: 'goal-1', revision: 4 }, request: { objective: 'nuevo objetivo' } }, 'the edit names the revision read')
   await client.clearGoal('s-1', goal)
   assert.equal(last().method, 'goals/clear')
   assert.deepEqual(last().args, { agentId: 's-1', ref: { id: 'goal-1', revision: 4 } }, 'clear needs the Session too')

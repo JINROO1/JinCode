@@ -914,6 +914,36 @@ export class AppController {
     })
   }
 
+  /**
+   * Change the objective of the goal of the active Session. A blank objective is refused,
+   * an unchanged one is not sent, and a stale revision reads the goal again.
+   * @param objective - the new objective.
+   */
+  async editGoal(objective: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const goal = this.state.panel.goal
+    if (sessionId === undefined || goal === undefined || goal === null) return
+    const text = objective.trim()
+    if (text.length === 0) {
+      this.patchPanel({ note: 'el objetivo no puede estar vacío' })
+      return
+    }
+    if (text === goal.objective) {
+      this.patchPanel({ note: 'sin cambios' })
+      return
+    }
+    await this.attempt(async () => {
+      try {
+        await this.panelClient.editGoal(sessionId, goal, text)
+        this.patchPanel({ note: 'meta editada' })
+      } catch (error) {
+        if (!(error instanceof Error) || !/stale goal ref/.test(error.message)) throw error
+        this.patchPanel({ note: 'la meta cambió desde que la leíste; se volvió a leer' })
+      }
+      await this.loadSection('goals')
+    })
+  }
+
   /** Remove the goal of the active Session. */
   async clearGoal(): Promise<void> {
     const sessionId = this.state.activeId

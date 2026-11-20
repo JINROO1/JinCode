@@ -375,9 +375,14 @@ export function sectionView(props: PanelProps): SectionView {
         return { body, focus, footer }
       }
       const goal = panel.goal
+      if (editing === 'goal') {
+        add(`Objetivo: ${textOf(field)}▌`, 'text', { bold: true })
+        hint('Enter guarda el objetivo · Esc cancela')
+        return { body, focus, footer }
+      }
       add(`Objetivo: ${goal.objective}`, 'text', { bold: true })
       add(`Estado: ${PHASE_LABEL[goal.phase] ?? goal.phase} · rondas ${goal.roundsStarted}/${goal.maxGoalRounds}`, 'muted')
-      hint('p pausar · r reanudar · c completar · x eliminar (con el campo vacío)')
+      hint('e editar objetivo · p pausar · r reanudar · c completar · x eliminar (con el campo vacío)')
       return { body, focus, footer }
     }
     case 'schedule': {

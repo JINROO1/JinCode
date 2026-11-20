@@ -44,7 +44,7 @@ Teclas del panel (Ctrl+T; Tab y Shift+Tab cambian de sección, Ctrl+T o Esc lo c
 | Cola | ↑↓ eligen un mensaje · `s` lo dirige al turno en curso · `e` lo edita (Enter guarda, Esc cancela) · `x` lo quita |
 | Permisos | Enter aplica el preset. `danger-full-access` pide un segundo Enter porque no tiene confinamiento; Esc cancela |
 | Ajustes | ↑↓ eligen un campo (agrupado por espacio de nombres). Enter edita el valor; Enter guarda, Esc cancela. `u` quita el valor propio (✎). `j` edita la sección entera en JSON (no disponible si tiene secretos). Con el perfil de solo lectura no se escribe nada |
-| Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío) |
+| Metas | Sin meta: escribe el objetivo y Enter la crea. Con meta: `e` edita el objetivo (Enter guarda, Esc cancela; sin cambios no se envía nada); `p` pausa, `r` reanuda, `c` completa, `x` elimina (con el campo vacío). Si otro cliente cambió la meta, la CLI lo avisa y la vuelve a leer |
 | Programaciones | ↑↓ listan todas las tareas, con su estado (activa, pausada, terminada, ejecutando) y su temporización. `n` crea; Enter o `e` edita; con el formulario abierto, ↑↓ cambian de campo, Enter guarda y Esc cancela. Temporizaciones: `after 600`, `every 3600`, `at 2026-12-01 09:30 Europe/Madrid`, `daily 09:00 UTC`, `weekly 09:00 UTC 1,3,5`, `cron 0 9 * * 1 UTC`, `rrule DTSTART:…\|RRULE:…`. Destinos: «sesión actual», «nueva sesión», «nueva sesión una vez». `p` pausa o reanuda; `r` ejecuta ahora; `h` lee las entregas; `x` elimina (dos veces); `c` quita las terminadas (dos veces). Una tarea terminada no se pausa |
 | Espacios | Lista en vivo (stream `workspace/follow`): cada espacio con sus sesiones, después «Sin espacio» y «Archivadas». `n` crea un espacio con la ruta escrita (vacío = espacio predeterminado). En un espacio: `r` renombra, `x` lo quita (dos veces; sus archivos y sesiones se conservan), `[` `]` lo suben o bajan. En una sesión: `p` fija o desfija, `a` archiva o restaura (una sesión con turno en curso no se archiva), `[` `]` la mueven dentro de su espacio |
 | Archivos | Explora la carpeta raíz del espacio de la sesión activa (`workspaceFiles/list`). Enter abre una carpeta o un archivo (en páginas de 40 líneas, `[` `]` pasan página); Backspace sube, o cierra la página o la búsqueda. `/` busca por nombre (`workspaceFiles/search`); `h` incluye los ocultos en las búsquedas; `r` recarga. Si el Host corta la lista, se avisa |
@@ -144,7 +144,7 @@ controlador en `tests/controller.test.ts`.
 | 7c | Archivos del espacio (`workspaceFiles/*`: listar, leer por páginas, buscar) | Hecho, probado en vivo |
 | 7d | Terminal (`terminal/*`: shells, crear, adjuntar a pantalla completa con acuses de entrada, renombrar, cerrar, retener, `watch` del listado) | Hecho, probado en vivo |
 | 7e | Programaciones completas (`schedule/*`): crear con siete temporizaciones y tres destinos, editar con revisión, pausar o reanudar, ejecutar, historial, eliminar y quitar terminadas | Hecho, probado en vivo |
-| 7f | Metas: editar (`goals/edit`) | Pendiente |
+| 7f | Metas: editar el objetivo (`goals/edit`, con la revisión leída) | Hecho, probado en vivo |
 | 8 | Subagentes (`subagents/prompt`, `interruptByUser`); agentes (`agentPresets/*`); plugins (`pluginManager/*`); MCP (`mcpManager/*`) | Pendiente |
 
 Verificación de la fase 6 en vivo: pregunta con respuesta de opción (turno completo tras
@@ -175,6 +175,10 @@ de sintaxis y mantiene el formulario abierto. `x` pide confirmación y la segund
 («programación eliminada»). `c` pide confirmación y responde «0 terminadas eliminadas». En el Host,
 un cambio con una `updatedAt` obsoleta devuelve `schedule_conflict` y no cambia nada; la CLI lo
 muestra como aviso.
+
+Fase 7f, verificación en vivo: `e` abre el objetivo actual en el campo («Objetivo: meta-uno▌»);
+Enter con «meta-editada» lo guarda y aparece «meta editada». Las pruebas cubren el caso de una
+revisión obsoleta (el Host responde «stale goal ref»): la CLI vuelve a leer la meta y avisa.
 
 Lo pendiente no está en la interfaz: en esas secciones no hay controles para esas funciones. Cada
 fase añade su controlador y sus pruebas sin tocar las anteriores.

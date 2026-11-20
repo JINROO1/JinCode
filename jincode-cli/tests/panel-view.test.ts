@@ -528,13 +528,15 @@ test('terminals: Enter opens, n chooses a shell, r renames, x closes; the choose
 
 // Keys with a small store behind the setters, so one test can press several keys in a row.
 function scheduleHarness(state: AppState, controller: AppController) {
-  const store: { field: Buffer; editor: ScheduleEditor | undefined; armed: string | undefined } = { field: emptyBuffer(), editor: undefined, armed: undefined }
+  const store: { field: Buffer; editor: ScheduleEditor | undefined; armed: string | undefined; editing: string | undefined } = { field: emptyBuffer(), editor: undefined, armed: undefined, editing: undefined }
   const press = (input: string, key: KeyLike = {}): void => {
     handlePanelKey(keysFor(state, controller, {
       input,
       key,
       field: store.field,
       setField: value => { store.field = value },
+      editingItem: store.editing,
+      setEditingItem: value => { store.editing = value },
       scheduleEditor: store.editor,
       setScheduleEditor: value => { store.editor = value },
       armed: store.armed,
@@ -631,6 +633,20 @@ test('schedules: c asks twice before removing the ended ones; p, r and h act on 
   harness.press('h')
   assert.equal(calls.filter(call => call.startsWith('runSchedule')).length, 1)
   assert.equal(calls.filter(call => call.startsWith('loadScheduleHistory')).length, 1)
+})
+
+test('goals: e edits the objective in place; Enter sends the text, and the goal is not touched until then', () => {
+  const { controller, calls } = fakeController()
+  const goal = { id: 'g', revision: 2, objective: 'objetivo', phase: 'active', roundsStarted: 0, maxGoalRounds: 8 }
+  const harness = scheduleHarness(stateWith({ section: 'goals', goal }), controller)
+  harness.press('e')
+  assert.equal(harness.store.editing, 'goal')
+  assert.equal(textOf(harness.store.field), 'objetivo', 'the field starts with the current objective')
+  harness.type('!')
+  assert.deepEqual(calls, [], 'typing sends nothing')
+  harness.press('', { return: true })
+  assert.equal(calls.at(-1), 'editGoal "objetivo!"')
+  assert.equal(harness.store.editing, undefined)
 })
 
 test('schedules: e opens the form with the task as the Host has it, typed so it parses again', () => {

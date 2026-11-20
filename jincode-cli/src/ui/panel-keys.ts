@@ -446,11 +446,25 @@ export function handlePanelKey(keys: PanelKeys): void {
       } else if (state.panel.goal === null) setField(editField(field, input, key))
       return
     }
+    // Editing the objective: the field starts with the current one; Enter saves it, Esc cancels.
+    if (editingItem === 'goal') {
+      if (key.return) {
+        const objective = textOf(field)
+        setEditingItem(undefined)
+        setField(emptyBuffer())
+        void controller.editGoal(objective)
+      } else setField(editField(field, input, key))
+      return
+    }
     if (textOf(field).length === 0) {
       if (input === 'p') void controller.goalAction('pause')
       else if (input === 'r') void controller.goalAction('resume')
       else if (input === 'c') void controller.goalAction('complete')
       else if (input === 'x') void controller.clearGoal()
+      else if (input === 'e' && state.panel.goal !== undefined && state.panel.goal !== null) {
+        setEditingItem('goal')
+        setField(bufferOf(state.panel.goal.objective))
+      }
     }
     return
   }

@@ -363,6 +363,16 @@ export class PanelClient {
   }
 
   /**
+   * Change the objective of the goal. The Host checks the revision read; a stale one is refused.
+   * @param agentId - the Session.
+   * @param goal - the goal as the panel read it.
+   * @param objective - the new objective.
+   */
+  async editGoal(agentId: string, goal: GoalView, objective: string): Promise<void> {
+    await call(this.connection, 'goals/edit', { agentId, ref: { id: goal.id, revision: goal.revision }, request: { objective } })
+  }
+
+  /**
    * Pause, resume or complete the goal; each change needs the revision the UI read.
    * @param agentId - the Session.
    * @param goal - the goal as last read.
