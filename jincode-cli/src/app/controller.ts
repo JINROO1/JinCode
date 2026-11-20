@@ -1,0 +1,1660 @@
+/**
+ * Application state and actions, independent of the rendering library. The UI
+ * subscribes to snapshots and calls actions; every Host call goes through here.
+ */
+import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { call, RemoteMux, type RemoteConnection, type RemoteStream } from '../wire/remote.ts'
+import {
+  SessionClient,
+  type Follow,
+  type ModelChoice,
+  type SessionSummary,
+} from './session-client.ts'
+import { InteractionClient } from './interactions.ts'
+import {
+  imageMediaTypeOf,
+  fileNameOf,
+  resolvePath,
+  sizeProblem,
+  type AttachmentDraft,
+} from './attachments.ts'
+import type {
+  AnswerItem,
+  ApprovalDecision,
+  PendingApproval,
+  PendingInteraction,
+  PendingQuestion,
+} from './interaction-rules.ts'
+import { emptyTranscript, type Transcript } from '../transcript/reducer.ts'
+import { canReplaceSection } from './settings-model.ts'
+import { PAGE_LINES, childPath, parentPath, type FilesView } from './file-model.ts'
+import { TerminalClient } from './terminal-client.ts'
+import {
+  TerminalError, TerminalInputQueue, issueText, normalizeInfos, parseTerminalFrame, stateText,
+  type ShellView, type TerminalEnvironment, type TerminalInfo,
+} from './terminal-model.ts'
+import { ScreenBuffer, type ScreenLine } from './terminal-screen.ts'
+import { applyWorkspaceFrame, emptyWorkspaces, groupRows, sessionMove, workspaceMove, type GroupableSession, type WorkspaceView } from './workspace-model.ts'
+import {
+  PanelClient,
+  type AgentPresetRow,
+  type BundleRow,
+  type InspectRow,
+  type PluginRow,
+  type GoalView,
+  type PresetView,
+  type QueueRow,
+  type SettingsRow,
+  type SettingOp,
+  type SkillRow,
+} from './panel-client.ts'
+import { mutationProblem, type ScheduleForm, type ScheduleRecord, type ScheduleTask } from './schedule-model.ts'
+import { normalizeMcpViews, probeRow, type McpProbeRow, type McpServerRow } from './mcp-model.ts'
+import { installLineOf } from './plugin-install-model.ts'
+
+/** The overlay covering the conversation, if any. */
+export type Overlay = 'none' | 'sessions' | 'models' | 'keys' | 'rename' | 'search' | 'help' | 'panel' | 'attach'
+
+/** How often the Session list is read again while a turn runs, to find continued questions. */
+const POLL_MS = 2500
+
+/** One change in the Workspace section. */
+export type WorkspaceAction =
+  | { readonly kind: 'create'; readonly path: string }
+  | { readonly kind: 'rename'; readonly workspaceId: string; readonly title: string }
+  | { readonly kind: 'delete'; readonly workspaceId: string }
+  | { readonly kind: 'moveWorkspace'; readonly workspaceId: string; readonly direction: -1 | 1 }
+  | { readonly kind: 'pin'; readonly sessionId: string; readonly pinned: boolean }
+  | { readonly kind: 'archive'; readonly sessionId: string; readonly archived: boolean }
+  | { readonly kind: 'moveSession'; readonly index: number; readonly direction: -1 | 1 }
+
+/** One change to a namespace from the settings section. */
+export type SettingAction =
+  | { readonly kind: 'set'; readonly key: string; readonly value: unknown }
+  | { readonly kind: 'unset'; readonly key: string }
+  | { readonly kind: 'replace'; readonly section: Record<string, unknown> }
+
+/** Sections of the panel, in the order Tab cycles through them. */
+export const PANEL_SECTIONS = ['queue', 'permissions', 'settings', 'workspaces', 'files', 'terminals', 'goals', 'schedule', 'skills', 'agents', 'plugins', 'mcp', 'subagents'] as const
+export type PanelSection = (typeof PANEL_SECTIONS)[number]
+
+/** One provider route as the Host lists it. */
+export interface ProviderRoute {
+  readonly id: string
+  readonly name: string
+  /** Whether a key is stored under this route's reference. */
+  readonly configured: boolean
+}
+
+/** A read-only snapshot the UI renders. */
+export interface AppState {
+  readonly sessions: readonly SessionSummary[]
+  readonly activeId: string | undefined
+  readonly transcript: Transcript
+  readonly models: readonly ModelChoice[]
+  readonly defaultChoice: ModelChoice | undefined
+  readonly modelCursor: number
+  readonly providers: readonly ProviderRoute[]
+  readonly keyCursor: number
+  readonly searchResults: ReadonlyArray<{ sessionId: string; snippet: string }>
+  /** Why content search did not run, when the title and folder match is all there is. */
+  readonly searchNote: string | undefined
+  readonly panel: PanelState
+  /** Questions and approvals waiting for the person; the first one is shown. */
+  readonly interactions: readonly PendingInteraction[]
+  /** The terminal shown full screen; undefined when none is attached. */
+  readonly terminal: TerminalView | undefined
+  /** Attachments waiting for the next prompt of the active Session. */
+  readonly attachments: readonly AttachmentDraft[]
+  readonly overlay: Overlay
+  readonly notice: string | undefined
+  readonly error: string | undefined
+}
+
+/** Data behind the panel sections. Undefined means not loaded yet. */
+export interface PanelState {
+  readonly section: PanelSection
+  readonly queue: readonly QueueRow[] | undefined
+  readonly presets: PresetView | undefined
+  readonly settings: readonly SettingsRow[] | undefined
+  /** The Workspace registry, pins and archives; undefined until the baseline arrives. */
+  readonly workspaces: WorkspaceView | undefined
+  /** The files of the active Session's workspace; undefined until the section loads. */
+  readonly files: FilesView | undefined
+  /** `null` when the Session has no goal; undefined before the first read. */
+  readonly goal: GoalView | null | undefined
+  /** Every scheduled task; undefined until the section loads. */
+  readonly schedules: readonly ScheduleTask[] | undefined
+  /** Minimum seconds between deliveries that open a new Session; undefined when the Host does not say. */
+  readonly scheduleLimit: number | undefined
+  /** The saved deliveries of the task read last, if any. */
+  readonly scheduleHistory: { readonly id: string; readonly records: readonly ScheduleRecord[] } | undefined
+  readonly skills: readonly SkillRow[] | undefined
+  /** The Session's terminals and the shell chooser; undefined until the section loads. */
+  readonly terminals: TerminalsView | undefined
+  /** Whether a message to a subagent waits for its next turn (`queue`) or targets its nearest step (`steer`). */
+  readonly subagentDelivery: 'queue' | 'steer'
+  /** The agent presets the Host offers; undefined until the section loads. */
+  readonly agentPresets: readonly AgentPresetRow[] | undefined
+  /** The declaration of the preset being viewed, if any. */
+  readonly agentYaml: { readonly preset: string; readonly content: string } | undefined
+  /** Plugins and bundles as the Host lists them; undefined until the section loads. */
+  readonly plugins: { readonly plugins: readonly PluginRow[]; readonly bundles: readonly BundleRow[] } | undefined
+  /** The last inspection or install, with the spec it was about. */
+  /** The last inspection (`phase: inspect`) or installation (`phase: install`) of a package spec. */
+  readonly pluginInspect: (InspectRow & { readonly spec: string; readonly phase?: 'inspect' | 'install'; readonly pendingBuilds?: readonly string[] }) | undefined
+  /** The MCP servers, from the Host's stream; undefined until the first list arrives. */
+  readonly mcp: readonly McpServerRow[] | undefined
+  /** Why the MCP list is not available (for example a Host without this surface). */
+  readonly mcpError: string | undefined
+  /** The last probe, with the server it was about. */
+  readonly mcpProbe: McpProbeRow | undefined
+  readonly note: string | undefined
+}
+
+/** The Session's terminals as the panel lists them. */
+export interface TerminalsView {
+  readonly sessionId: string
+  /** Undefined until the first list arrives. */
+  readonly items: readonly TerminalInfo[] | undefined
+  readonly environment: TerminalEnvironment | undefined
+  /** The shells to choose from, once the chooser has been opened. */
+  readonly shells: readonly ShellView[] | undefined
+  readonly choosing: boolean
+}
+
+/** The terminal shown full screen, when one is attached. */
+export interface TerminalView {
+  readonly sessionId: string
+  readonly id: string
+  /** `connecting` until the first snapshot; `disconnected` keeps the last screen until the person reconnects. */
+  readonly phase: 'connecting' | 'connected' | 'disconnected'
+  readonly info: TerminalInfo | undefined
+  /** Whether keystrokes reach the shell; read-only views show the screen only. */
+  readonly writable: boolean
+  readonly notice: string | undefined
+  /** Changes on every screen update, so the view redraws. */
+  readonly revision: number
+}
+
+/**
+ * Derive the credential reference a provider's key is stored under. It matches
+ * the Models page (`deriveKeyRef`), so a key saved in either place is the same.
+ * @param provider - provider route id, for example `jincode`.
+ * @returns the reference, for example `JINCODE_API_KEY`.
+ */
+/**
+ * The text of an error for the panel.
+ * @param error - anything thrown.
+ * @returns the message.
+ */
+function messageOf(error: unknown): string {
+  if (error instanceof TerminalError) return issueText(error.issue)
+  return error instanceof Error ? error.message : String(error)
+}
+
+export function keyRefFor(provider: string): string {
+  return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
+}
+
+/**
+ * Whether a Session matches a search by its title or its working folder. This
+ * is the sidebar search of the web interface, which works without the content index.
+ * @param session - the Session summary.
+ * @param query - the text typed, matched case-insensitively.
+ * @returns true when the title or the folder contains the text.
+ */
+export function matchesTitleOrFolder(session: SessionSummary, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase()
+  if (needle.length === 0) return false
+  return (session.title ?? '').toLocaleLowerCase().includes(needle)
+    || (session.cwd ?? '').toLocaleLowerCase().includes(needle)
+}
+
+/**
+ * Pick the active Session's title for the header, or a fallback.
+ * @param session - the summary, if known.
+ * @returns a display title.
+ */
+/** One row of the plugins section: a loader entry or a bundle. */
+export type PluginListRow = { readonly kind: 'plugin'; readonly row: PluginRow } | { readonly kind: 'bundle'; readonly row: BundleRow }
+
+/**
+ * The plugins section's rows: the bundles first (the packages a user installs or removes),
+ * then the loader entries, each in the Host's order.
+ * @param plugins - what the section loaded.
+ * @returns the rows the cursor walks.
+ */
+export function pluginRowsOf(plugins: { readonly plugins: readonly PluginRow[]; readonly bundles: readonly BundleRow[] } | undefined): PluginListRow[] {
+  if (plugins === undefined) return []
+  return [...plugins.bundles.map(row => ({ kind: 'bundle' as const, row })), ...plugins.plugins.map(row => ({ kind: 'plugin' as const, row }))]
+}
+
+/**
+ * The Host's reason why a plugin or bundle is read-only, in Spanish.
+ * @param reason - the reason the Host gives.
+ * @returns the text; unknown reasons show as they are.
+ */
+export function readOnlyText(reason: string): string {
+  if (reason === 'unaddressable') return 'lo gestiona el sistema, no el perfil'
+  if (reason === 'management-required') return 'lo gestiona el propio gestor de plugins'
+  return reason
+}
+
+/**
+ * The subagents of a Session: the Sessions whose parent it is, most recently updated first as the list sorts them.
+ * @param sessions - the Session list.
+ * @param parentId - the active Session.
+ * @returns the children.
+ */
+export function subagentsOf(sessions: readonly SessionSummary[], parentId: string | undefined): SessionSummary[] {
+  if (parentId === undefined) return []
+  return sessions.filter(session => session.parentSessionId === parentId)
+}
+
+export function titleOf(session: SessionSummary | undefined): string {
+  if (session === undefined) return 'Nueva sesión'
+  if (session.title !== undefined) return session.title
+  return session.blank ? 'Sesión vacía' : 'Sesión sin título'
+}
+
+/**
+ * The Sessions as the Workspace grouping reads them, with the titles the sidebar shows.
+ * @param sessions - the Sessions the controller knows.
+ * @returns one entry per Session.
+ */
+export function groupableSessions(sessions: readonly SessionSummary[]): GroupableSession[] {
+  return sessions.map(session => ({ sessionId: session.sessionId, title: titleOf(session), running: session.running }))
+}
+
+/** Controller bound to one server connection. */
+export class AppController {
+  private readonly sessions: SessionClient
+  private readonly panelClient: PanelClient
+  private readonly interactionClient: InteractionClient
+  private readonly attachmentsBySession = new Map<string, AttachmentDraft[]>()
+  private poll: ReturnType<typeof setInterval> | undefined
+  private follow: Follow | undefined
+  private readonly listeners = new Set<(state: AppState) => void>()
+  private state: AppState = {
+    sessions: [],
+    activeId: undefined,
+    transcript: emptyTranscript(),
+    models: [],
+    defaultChoice: undefined,
+    modelCursor: 0,
+    providers: [],
+    keyCursor: 0,
+    searchResults: [],
+    searchNote: undefined,
+    panel: { section: 'queue', queue: undefined, presets: undefined, settings: undefined, workspaces: undefined, files: undefined, goal: undefined, schedules: undefined, scheduleLimit: undefined, scheduleHistory: undefined, skills: undefined, terminals: undefined, subagentDelivery: 'queue', agentPresets: undefined, agentYaml: undefined, plugins: undefined, pluginInspect: undefined, mcp: undefined, mcpError: undefined, mcpProbe: undefined, note: undefined },
+    interactions: [],
+    terminal: undefined,
+    attachments: [],
+    overlay: 'none',
+    notice: undefined,
+    error: undefined,
+  }
+
+  private workspaceFollow: { stop: () => void } | undefined
+  private mcpFollow: { stop: () => void } | undefined
+  private readonly terminalClient: TerminalClient
+  private terminalWatch: { sessionId: string; stream: RemoteStream<unknown> } | undefined
+  private terminalScreen: ScreenBuffer | undefined
+  private terminalInput: TerminalInputQueue | undefined
+  private terminalAttach: { sessionId: string; stream: RemoteStream<unknown>; retain: RemoteStream<unknown> | undefined; expected: number } | undefined
+  /** The size of the window, which a new terminal and an attached screen use. */
+  private terminalSize = { cols: 80, rows: 24 }
+
+  constructor(private readonly connection: RemoteConnection) {
+    // The Host accepts one multiplexed socket per connection, so every stream shares this one.
+    const mux = new RemoteMux(connection)
+    this.sessions = new SessionClient(connection, mux)
+    this.panelClient = new PanelClient(connection, mux)
+    this.terminalClient = new TerminalClient(connection, mux)
+    this.interactionClient = new InteractionClient(connection, {
+      onChange: pending => this.patch({ interactions: pending }),
+      onError: error => this.fail(error),
+    }, mux)
+  }
+
+  /** @returns the current snapshot. */
+  snapshot(): AppState {
+    return this.state
+  }
+
+  /**
+   * Subscribe to snapshots.
+   * @param listener - called after every change.
+   * @returns an unsubscribe function.
+   */
+  subscribe(listener: (state: AppState) => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  /**
+   * Load Sessions, the catalog and the provider routes, then open the most
+   * recently updated Session, or create one when none exists.
+   */
+  async start(): Promise<void> {
+    this.interactionClient.start()
+    this.workspaceFollow ??= this.panelClient.followWorkspaces(
+      frame => this.patchPanel({ workspaces: applyWorkspaceFrame(this.state.panel.workspaces ?? emptyWorkspaces(), frame) }),
+      error => this.fail(error),
+    )
+    // The MCP list is a status feed: a Host without the surface only leaves the section empty.
+    this.mcpFollow ??= this.panelClient.followMcp(
+      frame => this.patchPanel({ mcp: normalizeMcpViews(frame), mcpError: undefined }),
+      error => this.patchPanel({ mcpError: error instanceof Error ? error.message : String(error) }),
+    )
+    await Promise.all([this.refreshSessions(), this.refreshCatalog(), this.refreshProviders()])
+    const first = this.state.sessions[0]
+    if (first !== undefined) await this.open(first.sessionId)
+    else await this.newSession()
+  }
+
+  /** Create a Session in the working directory and open it. */
+  async newSession(): Promise<void> {
+    await this.attempt(async () => {
+      const id = await this.sessions.createSession({})
+      await this.refreshSessions()
+      await this.open(id)
+    })
+  }
+
+  /**
+   * Open a Session: stop following the previous one and follow this one.
+   * @param sessionId - the Session to show.
+   */
+  async open(sessionId: string): Promise<void> {
+    this.follow?.stop()
+    this.patch({ activeId: sessionId, transcript: emptyTranscript(), overlay: 'none', error: undefined, attachments: this.attachmentsOf(sessionId) })
+    this.follow = this.sessions.follow(
+      sessionId,
+      transcript => {
+        if (this.state.activeId !== sessionId) return
+        this.patch({ transcript })
+        this.followPolling(transcript.running)
+      },
+      error => {
+        this.fail(error)
+      },
+    )
+  }
+
+  /**
+   * Send text to the active Session. While a turn runs the text steers it;
+   * otherwise it queues the next turn.
+   * @param text - the message.
+   */
+  async send(text: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const body = text.trim()
+    const drafts = this.attachmentsOf(sessionId)
+    if (sessionId === undefined || (body.length === 0 && drafts.length === 0)) return
+    const mode = this.state.transcript.running ? 'steer' : 'queue'
+    await this.attempt(async () => {
+      await this.sessions.sendPrompt(sessionId, body, mode, drafts.map(draft => draft.part))
+      this.attachmentsBySession.delete(sessionId)
+      this.patch({ error: undefined, attachments: [] })
+    })
+  }
+
+  /**
+   * Read a file from the terminal's machine and attach it to the next prompt of
+   * the active Session. Images travel inline; other files are uploaded first.
+   * @param input - the path as typed; `~` and relative paths are resolved here.
+   */
+  async attachFile(input: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined || input.trim().length === 0) return
+    const path = resolvePath(input, homedir(), process.cwd())
+    const name = fileNameOf(path)
+    await this.attempt(async () => {
+      let data: Buffer
+      try {
+        data = await readFile(path)
+      } catch {
+        throw new Error(`no se pudo leer ${path}`)
+      }
+      const problem = sizeProblem(data.byteLength)
+      if (problem !== undefined) throw new Error(`${name}: ${problem}`)
+      const mediaType = imageMediaTypeOf(name)
+      const key = randomUUID()
+      if (mediaType !== undefined) {
+        this.addAttachment(sessionId, { key, name, size: data.byteLength, part: { type: 'image', mediaType, data: data.toString('base64'), name } })
+      } else {
+        this.patch({ notice: `subiendo ${name}…` })
+        const uploaded = await this.sessions.uploadFile(sessionId, name, data)
+        this.addAttachment(sessionId, { key, name: uploaded.name, size: data.byteLength, part: { type: 'file', receiptId: uploaded.receiptId } })
+      }
+      this.patch({ error: undefined, notice: `adjunto: ${name}` })
+    })
+  }
+
+  /**
+   * Drop one attachment from the next prompt.
+   * @param index - the position in the attachment list.
+   */
+  removeAttachment(index: number): void {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    const drafts = this.attachmentsOf(sessionId)
+    if (index < 0 || index >= drafts.length) return
+    const rest = drafts.filter((_, position) => position !== index)
+    this.attachmentsBySession.set(sessionId, rest)
+    this.patch({ attachments: rest })
+  }
+
+  /**
+   * Answer a question the Agent asked.
+   * @param item - the pending question.
+   * @param answers - one answer per question.
+   */
+  async answerQuestion(item: PendingQuestion, answers: readonly AnswerItem[]): Promise<void> {
+    await this.attempt(async () => {
+      await this.interactionClient.answerQuestion(item, answers)
+      this.patch({ error: undefined, notice: 'respuesta enviada' })
+    })
+  }
+
+  /**
+   * Decide a tool approval.
+   * @param item - the pending approval.
+   * @param decision - allow once, or reject.
+   */
+  async decideApproval(item: PendingApproval, decision: ApprovalDecision): Promise<void> {
+    await this.attempt(async () => {
+      await this.interactionClient.decideApproval(item, decision)
+      this.patch({ error: undefined, notice: decision === 'allowed-once' ? 'herramienta aprobada una vez' : 'herramienta rechazada' })
+    })
+  }
+
+  /**
+   * Pass a pending interaction on to the next answerer.
+   * @param item - the pending interaction.
+   */
+  async delegateInteraction(item: PendingInteraction): Promise<void> {
+    await this.attempt(async () => {
+      await this.interactionClient.delegate(item)
+    })
+  }
+
+  /** Stop the running turn of the active Session. */
+  async cancel(): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      await this.sessions.cancel(sessionId)
+      this.patch({ notice: 'turno cancelado' })
+    })
+  }
+
+  /**
+   * Rename the active Session.
+   * @param title - the new title; blank titles are ignored.
+   */
+  async rename(title: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const next = title.trim()
+    if (sessionId === undefined || next.length === 0) return
+    await this.attempt(async () => {
+      await this.sessions.rename(sessionId, next)
+      await this.refreshSessions()
+      this.patch({ overlay: 'none', notice: 'sesión renombrada' })
+    })
+  }
+
+  /** Fork the active Session and open the copy. */
+  async fork(): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      const copy = await this.sessions.fork(sessionId)
+      await this.refreshSessions()
+      await this.open(copy)
+      this.patch({ notice: 'sesión bifurcada' })
+    })
+  }
+
+  /**
+   * Search Session content and show the results overlay.
+   * @param query - the text to find.
+   */
+  async search(query: string): Promise<void> {
+    const text = query.trim()
+    if (text.length === 0) {
+      this.patch({ searchResults: [], searchNote: undefined })
+      return
+    }
+    const local = this.state.sessions
+      .filter(session => matchesTitleOrFolder(session, text))
+      .map(session => ({ sessionId: session.sessionId, snippet: session.cwd ?? session.title ?? session.sessionId }))
+    try {
+      const content = await this.sessions.search(text)
+      const seen = new Set(local.map(item => item.sessionId))
+      const merged = [...local, ...content.filter(item => !seen.has(item.sessionId))]
+      this.patch({ searchResults: merged, searchNote: undefined, overlay: 'search' })
+    } catch (error) {
+      // Content search is optional on this profile; titles and folders still answer.
+      const reason = error instanceof Error ? error.message : String(error)
+      const note = /disabled|desactivad/i.test(reason)
+        ? 'La búsqueda en el contenido está desactivada en este perfil: se buscan títulos y carpetas.'
+        : `La búsqueda en el contenido falló: ${reason}. Se muestran títulos y carpetas.`
+      this.patch({ searchResults: local, searchNote: note, overlay: 'search' })
+    }
+  }
+
+  /**
+   * Open a search result or a listed Session.
+   * @param sessionId - the Session to show.
+   */
+  async openFromList(sessionId: string): Promise<void> {
+    await this.open(sessionId)
+  }
+
+  /** Load the model catalog and show the models overlay. */
+  async openModels(): Promise<void> {
+    await this.attempt(async () => {
+      await this.refreshCatalog()
+      const current = this.state.sessions.find(item => item.sessionId === this.state.activeId)?.model
+      const index = this.state.models.findIndex(item => `${item.provider}/${item.model}` === current)
+      this.patch({
+        overlay: 'models',
+        modelCursor: index < 0 ? 0 : index,
+        notice: this.state.models.length === 0 ? 'no hay modelos disponibles: guarde una clave de proveedor' : undefined,
+      })
+    })
+  }
+
+  /**
+   * Move the highlighted row of the models overlay.
+   * @param delta - rows to move; wraps around.
+   */
+  moveModel(delta: number): void {
+    const count = this.state.models.length
+    if (count === 0) return
+    this.patch({ modelCursor: (this.state.modelCursor + delta + count) % count })
+  }
+
+  /**
+   * Select the highlighted model for the active Session.
+   * @param reasoningEffort - the effort to use, when the model offers efforts.
+   */
+  async chooseModel(reasoningEffort?: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const choice = this.state.models[this.state.modelCursor]
+    if (sessionId === undefined || choice === undefined) return
+    await this.attempt(async () => {
+      await this.sessions.selectModel(sessionId, choice.provider, choice.model, reasoningEffort)
+      await this.refreshSessions()
+      this.patch({ overlay: 'none', notice: `modelo: ${choice.provider}/${choice.model}` })
+    })
+  }
+
+  /** Open the provider keys overlay and check which keys are stored. */
+  async openKeys(): Promise<void> {
+    await this.attempt(async () => {
+      await this.refreshProviders()
+      this.patch({ overlay: 'keys', keyCursor: 0 })
+    })
+  }
+
+  /**
+   * Move the highlighted provider in the keys overlay.
+   * @param delta - rows to move; wraps around.
+   */
+  moveKey(delta: number): void {
+    const count = this.state.providers.length
+    if (count === 0) return
+    this.patch({ keyCursor: (this.state.keyCursor + delta + count) % count })
+  }
+
+  /**
+   * Store a key through the credentials service. The value goes only in this
+   * direction; the UI never displays it again.
+   * @param value - the key typed by the user.
+   */
+  async saveKey(value: string): Promise<void> {
+    const provider = this.state.providers[this.state.keyCursor]
+    if (provider === undefined || value.length === 0) return
+    await this.attempt(async () => {
+      await call(this.connection, 'credentials/set', { ref: keyRefFor(provider.id), value })
+      await this.refreshProviders()
+      await this.refreshCatalog()
+      this.patch({ notice: `clave guardada para ${provider.name}` })
+    })
+  }
+
+  /** Remove the stored key of the highlighted provider. */
+  async clearKey(): Promise<void> {
+    const provider = this.state.providers[this.state.keyCursor]
+    if (provider === undefined) return
+    await this.attempt(async () => {
+      await call(this.connection, 'credentials/unset', { ref: keyRefFor(provider.id) })
+      await this.refreshProviders()
+      await this.refreshCatalog()
+      this.patch({ notice: `clave eliminada para ${provider.name}` })
+    })
+  }
+
+  /**
+   * Show or hide an overlay.
+   * @param overlay - the overlay to show; `none` closes it.
+   */
+  setOverlay(overlay: Overlay): void {
+    this.patch({ overlay })
+  }
+
+  /**
+   * Open the panel on a section and load its data.
+   * @param section - the section to show.
+   */
+  async openPanel(section: PanelSection = 'queue'): Promise<void> {
+    this.patch({ overlay: 'panel', panel: { ...this.state.panel, section, note: undefined } })
+    await this.loadSection(section)
+  }
+
+  /**
+   * Show another panel section and load it.
+   * @param section - the section to show.
+   */
+  async setSection(section: PanelSection): Promise<void> {
+    this.patch({ panel: { ...this.state.panel, section, note: undefined } })
+    await this.loadSection(section)
+  }
+
+  /**
+   * Load the data of one panel section. Sections that depend on a Session
+   * need an active one; without it they stay empty.
+   * @param section - the section to load.
+   */
+  async loadSection(section: PanelSection): Promise<void> {
+    const sessionId = this.state.activeId
+    await this.attempt(async () => {
+      switch (section) {
+        case 'queue': {
+          if (sessionId === undefined) return
+          this.patchPanel({ queue: await this.panelClient.queue(sessionId) })
+          return
+        }
+        case 'permissions': {
+          this.patchPanel({ presets: await this.panelClient.presets() })
+          return
+        }
+        case 'settings': {
+          this.patchPanel({ settings: await this.panelClient.settings() })
+          return
+        }
+        case 'workspaces':
+          // The stream started by `start` keeps this section current.
+          return
+        case 'files': {
+          if (sessionId === undefined) {
+            this.patchPanel({ files: undefined })
+            return
+          }
+          const previous = this.state.panel.files
+          await this.browseFiles(previous?.sessionId === sessionId ? previous.path : '')
+          return
+        }
+        case 'terminals': {
+          await this.loadTerminals()
+          return
+        }
+        case 'goals': {
+          if (sessionId === undefined) return
+          this.patchPanel({ goal: (await this.panelClient.goal(sessionId)) ?? null })
+          return
+        }
+        case 'schedule': {
+          const [schedules, scheduleLimit] = await Promise.all([this.panelClient.schedules(), this.panelClient.scheduleLimit()])
+          this.patchPanel({ schedules, scheduleLimit })
+          return
+        }
+        case 'skills': {
+          if (sessionId === undefined) return
+          this.patchPanel({ skills: await this.panelClient.skills(sessionId) })
+          return
+        }
+        case 'agents': {
+          this.patchPanel({ agentPresets: await this.panelClient.agentPresets() })
+          return
+        }
+        case 'plugins': {
+          this.patchPanel({ plugins: await this.panelClient.plugins() })
+          return
+        }
+        case 'subagents': {
+          // The subagents are the Sessions whose parent is the active one; the Session list carries them.
+          await this.refreshSessions()
+          return
+        }
+      }
+    })
+  }
+
+  /**
+   * Steer, edit or remove a message waiting in the queue of the active Session.
+   * @param itemId - the queued message.
+   * @param action - the change to apply.
+   */
+  async queueAction(itemId: string, action: { kind: 'steer' } | { kind: 'remove' } | { kind: 'edit'; text: string }): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      await this.panelClient.updateQueue(sessionId, itemId, action)
+      this.patchPanel({ note: action.kind === 'steer' ? 'mensaje dirigido al turno en curso' : action.kind === 'remove' ? 'mensaje quitado de la cola' : 'mensaje editado' })
+      await this.loadSection('queue')
+    })
+  }
+
+  /**
+   * Switch the permission preset of the active Session.
+   * @param preset - a name from the catalog.
+   */
+  async setPreset(preset: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      await this.panelClient.setPreset(sessionId, preset)
+      await this.refreshSessions()
+      this.patchPanel({ note: `permisos: ${preset}` })
+    })
+  }
+
+  /**
+   * Show a message in the panel's note line, for input the panel refused before any call.
+   * @param note - the message.
+   */
+  notePanel(note: string): void {
+    this.patchPanel({ note })
+  }
+
+  /**
+   * Run one Workspace action. Pins, archives and moves are shown when the Host
+   * streams them back, so the panel only reports what it asked for.
+   * @param action - the change to apply.
+   */
+  async workspaceAction(action: WorkspaceAction): Promise<void> {
+    const view = this.state.panel.workspaces ?? emptyWorkspaces()
+    const sessions = this.state.sessions
+    await this.attempt(async () => {
+      switch (action.kind) {
+        case 'create': {
+          const path = action.path.trim()
+          if (path.length === 0) {
+            await this.panelClient.initializeDefaultWorkspace()
+            this.patchPanel({ note: 'espacio predeterminado listo' })
+            return
+          }
+          const created = await this.panelClient.createWorkspace(path)
+          this.patchPanel({ note: created === undefined ? 'espacio creado' : `espacio «${created.title}» listo` })
+          return
+        }
+        case 'rename': {
+          const title = action.title.trim()
+          if (title.length === 0) {
+            this.patchPanel({ note: 'el título no puede estar vacío' })
+            return
+          }
+          await this.panelClient.renameWorkspace(action.workspaceId, title)
+          this.patchPanel({ note: 'espacio renombrado' })
+          return
+        }
+        case 'delete':
+          await this.panelClient.deleteWorkspace(action.workspaceId)
+          this.patchPanel({ note: 'espacio quitado; sus archivos y sesiones se conservan' })
+          return
+        case 'moveWorkspace': {
+          const move = workspaceMove(view, action.workspaceId, action.direction)
+          if (move === undefined) return
+          await this.panelClient.moveWorkspace(action.workspaceId, move.beforeWorkspaceId)
+          return
+        }
+        case 'pin':
+          await this.panelClient.setPinned(action.sessionId, action.pinned)
+          this.patchPanel({ note: action.pinned ? 'sesión fijada' : 'sesión desfijada' })
+          return
+        case 'archive': {
+          const session = sessions.find(item => item.sessionId === action.sessionId)
+          if (action.archived && session?.running === true) {
+            this.patchPanel({ note: 'la sesión tiene un turno en curso: espera a que termine o cancélalo' })
+            return
+          }
+          await this.panelClient.setArchived(action.sessionId, action.archived)
+          this.patchPanel({ note: action.archived ? 'sesión archivada' : 'sesión restaurada' })
+          return
+        }
+        case 'moveSession': {
+          const rows = groupRows(view, groupableSessions(sessions))
+          const move = sessionMove(rows, action.index, action.direction)
+          const row = rows[action.index]
+          if (move === undefined || row?.kind !== 'session') return
+          await this.panelClient.moveSession(move.workspaceId, row.sessionId, move.beforeSessionId)
+          return
+        }
+      }
+    })
+  }
+
+  /**
+   * List one directory of the active Session's workspace and clear any open page or search.
+   * @param path - the directory, relative to the root; empty for the root.
+   */
+  async browseFiles(path: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      const listing = await this.panelClient.listFiles(sessionId, path)
+      const includeHidden = this.state.panel.files?.includeHidden ?? false
+      this.patchPanel({ files: { sessionId, path: listing.path, entries: listing.entries, page: undefined, matches: undefined, includeHidden } })
+    })
+  }
+
+  /**
+   * Open one file of the active Session's workspace on its first page.
+   * @param path - the file, relative to the root.
+   * @param offset - the first line to show.
+   */
+  async openFile(path: string, offset = 1): Promise<void> {
+    const view = this.state.panel.files
+    const sessionId = this.state.activeId
+    if (view === undefined || sessionId === undefined) return
+    await this.attempt(async () => {
+      const page = await this.panelClient.readFile(sessionId, path, offset, PAGE_LINES)
+      this.patchPanel({ files: { ...view, page, matches: undefined } })
+    })
+  }
+
+  /**
+   * Move through the open file by one page, forward or back.
+   * @param direction - -1 for the page before, +1 for the page after.
+   */
+  async pageFile(direction: -1 | 1): Promise<void> {
+    const page = this.state.panel.files?.page
+    if (page === undefined) return
+    if (direction > 0 && page.eof) return
+    const offset = Math.max(1, page.offset + direction * PAGE_LINES)
+    await this.openFile(page.path, offset)
+  }
+
+  /**
+   * Search file names in the active Session's workspace and show the hits in place of the listing.
+   * @param query - the text to find; blank queries are ignored.
+   */
+  async searchFiles(query: string): Promise<void> {
+    const view = this.state.panel.files
+    const sessionId = this.state.activeId
+    const text = query.trim()
+    if (view === undefined || sessionId === undefined || text.length === 0) return
+    await this.attempt(async () => {
+      const result = await this.panelClient.searchFiles(sessionId, text, view.includeHidden)
+      this.patchPanel({ files: { ...view, page: undefined, matches: { query: text, items: result.items, truncated: result.truncated } } })
+      const count = result.truncated ? `más de ${result.items.length}` : `${result.items.length}`
+      this.patchPanel({ note: result.items.length === 0 ? `sin resultados para «${text}»` : `${count} resultado(s) para «${text}»` })
+    })
+  }
+
+  /** Include or leave out hidden files in searches; a search on screen runs again. */
+  async toggleHidden(): Promise<void> {
+    const view = this.state.panel.files
+    if (view === undefined) return
+    this.patchPanel({ files: { ...view, includeHidden: !view.includeHidden } })
+    const query = view.matches?.query
+    if (query !== undefined) await this.searchFiles(query)
+  }
+
+  /** Leave the open file or the search results and show the listing again. */
+  closeFileView(): void {
+    const view = this.state.panel.files
+    if (view === undefined) return
+    this.patchPanel({ files: { ...view, page: undefined, matches: undefined } })
+  }
+
+  /** Go to the directory above the current one; the root stays the root. */
+  async upFiles(): Promise<void> {
+    const view = this.state.panel.files
+    if (view === undefined || view.path.length === 0) return
+    await this.browseFiles(parentPath(view.path))
+  }
+
+  /** Re-read the listing of the current directory. */
+  async reloadFiles(): Promise<void> {
+    const view = this.state.panel.files
+    await this.browseFiles(view?.path ?? '')
+  }
+
+  /**
+   * Change one field of a namespace, remove its override, or replace the whole
+   * user section. Each write carries the revision the panel read, so a concurrent
+   * change is refused by the Host and the panel reloads instead of overwriting it.
+   * @param ns - the namespace.
+   * @param action - the change to apply.
+   */
+  async settingAction(ns: string, action: SettingAction): Promise<void> {
+    const row = this.state.panel.settings?.find(item => item.ns === ns)
+    if (row === undefined) return
+    if (!row.writable) {
+      this.patchPanel({ note: 'los ajustes son de solo lectura en este perfil' })
+      return
+    }
+    await this.attempt(async () => {
+      if (action.kind === 'replace') {
+        if (!canReplaceSection(row)) {
+          this.patchPanel({ note: 'esta sección tiene secretos: edítala campo a campo' })
+          return
+        }
+        await this.panelClient.replaceSection(ns, action.section, row.revision)
+      } else {
+        const op: SettingOp = action.kind === 'set'
+          ? { op: 'set', path: [action.key], value: action.value }
+          : { op: 'unset', path: [action.key] }
+        await this.panelClient.writeSetting(ns, [op], row.revision)
+      }
+      this.patchPanel({ note: action.kind === 'replace' ? `${ns}: sección guardada` : action.kind === 'set' ? `${ns}.${action.key} guardado` : `${ns}.${action.key}: vuelve al valor base` })
+      await this.loadSection('settings')
+    })
+  }
+
+  /**
+   * Create a goal for the active Session.
+   * @param objective - what the goal should achieve; blank objectives are ignored.
+   */
+  async createGoal(objective: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const text = objective.trim()
+    if (sessionId === undefined || text.length === 0) return
+    await this.attempt(async () => {
+      await this.panelClient.createGoal(sessionId, text)
+      this.patchPanel({ note: 'meta creada' })
+      await this.loadSection('goals')
+    })
+  }
+
+  /**
+   * Pause, resume or complete the goal of the active Session.
+   * @param action - the transition.
+   */
+  async goalAction(action: 'pause' | 'resume' | 'complete'): Promise<void> {
+    const sessionId = this.state.activeId
+    const goal = this.state.panel.goal
+    if (sessionId === undefined || goal === undefined || goal === null) return
+    await this.attempt(async () => {
+      await this.panelClient.goalAction(sessionId, goal, action)
+      this.patchPanel({ note: `meta: ${action}` })
+      await this.loadSection('goals')
+    })
+  }
+
+  /**
+   * Change the objective of the goal of the active Session. A blank objective is refused,
+   * an unchanged one is not sent, and a stale revision reads the goal again.
+   * @param objective - the new objective.
+   */
+  async editGoal(objective: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const goal = this.state.panel.goal
+    if (sessionId === undefined || goal === undefined || goal === null) return
+    const text = objective.trim()
+    if (text.length === 0) {
+      this.patchPanel({ note: 'el objetivo no puede estar vacío' })
+      return
+    }
+    if (text === goal.objective) {
+      this.patchPanel({ note: 'sin cambios' })
+      return
+    }
+    await this.attempt(async () => {
+      try {
+        await this.panelClient.editGoal(sessionId, goal, text)
+        this.patchPanel({ note: 'meta editada' })
+      } catch (error) {
+        if (!(error instanceof Error) || !/stale goal ref/.test(error.message)) throw error
+        this.patchPanel({ note: 'la meta cambió desde que la leíste; se volvió a leer' })
+      }
+      await this.loadSection('goals')
+    })
+  }
+
+  /** Remove the goal of the active Session. */
+  async clearGoal(): Promise<void> {
+    const sessionId = this.state.activeId
+    const goal = this.state.panel.goal
+    if (sessionId === undefined || goal === undefined || goal === null) return
+    await this.attempt(async () => {
+      await this.panelClient.clearGoal(sessionId, goal)
+      this.patchPanel({ note: 'meta eliminada' })
+      await this.loadSection('goals')
+    })
+  }
+
+  /**
+   * Create a scheduled task, or change one, from a form the panel already validated.
+   * @param request - the `schedule/create` or `schedule/edit` request.
+   * @param editing - whether the request changes an existing task.
+   * @returns true when the Host saved it, so the form can close.
+   */
+  async saveSchedule(request: Record<string, unknown>, editing: boolean): Promise<boolean> {
+    let saved = false
+    await this.attempt(async () => {
+      if (!editing) {
+        await this.panelClient.createSchedule(request)
+        saved = true
+        this.patchPanel({ note: 'programación creada' })
+      } else {
+        const problem = mutationProblem(await this.panelClient.editSchedule(request))
+        if (problem !== undefined) {
+          this.patchPanel({ note: problem })
+        } else {
+          saved = true
+          this.patchPanel({ note: 'programación guardada' })
+        }
+      }
+      await this.loadSection('schedule')
+    })
+    return saved
+  }
+
+  /**
+   * Pause or resume a scheduled task. Ended tasks cannot change.
+   * @param task - the task as the panel last read it.
+   */
+  async toggleSchedule(task: ScheduleTask): Promise<void> {
+    if (task.status === 'ended') {
+      this.patchPanel({ note: 'una programación terminada no se puede pausar ni reanudar' })
+      return
+    }
+    await this.attempt(async () => {
+      const problem = mutationProblem(await this.panelClient.editSchedule({ id: task.id, action: 'update', patch: { active: task.status !== 'active' }, expectedUpdatedAt: task.updatedAt }))
+      this.patchPanel({ note: problem ?? (task.status === 'active' ? 'programación pausada' : 'programación reanudada') })
+      await this.loadSection('schedule')
+    })
+  }
+
+  /**
+   * Deliver a scheduled task now.
+   * @param task - the task.
+   */
+  async runSchedule(task: ScheduleTask): Promise<void> {
+    await this.attempt(async () => {
+      await this.panelClient.runSchedule(task.id)
+      this.patchPanel({ note: 'entrega pedida; aparecerá en el historial' })
+      await this.loadSection('schedule')
+    })
+  }
+
+  /**
+   * Read the saved deliveries of a task into the panel.
+   * @param task - the task.
+   */
+  async loadScheduleHistory(task: ScheduleTask): Promise<void> {
+    await this.attempt(async () => {
+      const records = await this.panelClient.scheduleHistory(task.id)
+      this.patchPanel({ scheduleHistory: { id: task.id, records }, note: records.length === 0 ? 'sin entregas todavía' : undefined })
+    })
+  }
+
+  /**
+   * Delete a scheduled task and its saved deliveries.
+   * @param task - the task as the panel last read it.
+   */
+  async deleteSchedule(task: ScheduleTask): Promise<void> {
+    await this.attempt(async () => {
+      const problem = mutationProblem(await this.panelClient.editSchedule({ id: task.id, action: 'delete', expectedUpdatedAt: task.updatedAt }))
+      this.patchPanel({ note: problem ?? 'programación eliminada' })
+      await this.loadSection('schedule')
+    })
+  }
+
+  /** Remove every ended scheduled task; the Host answers how many it removed. */
+  async clearEndedSchedules(): Promise<void> {
+    await this.attempt(async () => {
+      const count = await this.panelClient.clearEndedSchedules()
+      this.patchPanel({ note: `${count} terminadas eliminadas` })
+      await this.loadSection('schedule')
+    })
+  }
+
+  /**
+   * Send a message to a subagent of the active Session.
+   * @param childSessionId - the subagent.
+   * @param text - the message; blank messages are ignored.
+   */
+  async sendToChild(childSessionId: string, text: string): Promise<void> {
+    const message = text.trim()
+    if (message.length === 0) return
+    await this.attempt(async () => {
+      await this.panelClient.sendToChild(childSessionId, message, this.state.panel.subagentDelivery)
+      this.patchPanel({ note: this.state.panel.subagentDelivery === 'steer' ? 'mensaje dirigido al paso en curso del subagente' : 'mensaje encolado para el subagente' })
+    })
+  }
+
+  /** Interrupt a subagent. The Host accepts an idle one as a no-op. */
+  async interruptChild(childSessionId: string): Promise<void> {
+    await this.attempt(async () => {
+      await this.panelClient.interruptChild(childSessionId)
+      this.patchPanel({ note: 'interrupción pedida al subagente' })
+      await this.refreshSessions()
+    })
+  }
+
+  /**
+   * Select an agent preset for the active Session. The Host accepts it only before the first turn,
+   * so a Session that already ran is refused here with a note, and nothing is sent.
+   * @param agentPreset - the preset.
+   */
+  async selectAgentPreset(agentPreset: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    const session = this.state.sessions.find(item => item.sessionId === sessionId)
+    if (session !== undefined && !session.blank) {
+      this.patchPanel({ note: 'esta sesión ya empezó; crea una sesión nueva para usar otro agente' })
+      return
+    }
+    await this.attempt(async () => {
+      const selected = await this.panelClient.selectAgentPreset(sessionId, agentPreset)
+      this.patchPanel({ note: `agente seleccionado: ${selected}` })
+    })
+  }
+
+  /**
+   * Create a Session that runs the chosen preset and open it.
+   * @param agentPreset - the preset.
+   */
+  async newSessionWithPreset(agentPreset: string): Promise<void> {
+    await this.attempt(async () => {
+      const id = await this.sessions.createSession({ agentPreset })
+      await this.refreshSessions()
+      await this.open(id)
+      this.patchPanel({ note: `sesión nueva con el agente ${agentPreset}` })
+    })
+  }
+
+  /**
+   * Show or hide the declaration of a preset. Showing it again closes it.
+   * @param agentPreset - the preset.
+   */
+  async toggleAgentYaml(agentPreset: string): Promise<void> {
+    if (this.state.panel.agentYaml?.preset === agentPreset) {
+      this.patchPanel({ agentYaml: undefined })
+      return
+    }
+    await this.attempt(async () => {
+      const content = await this.panelClient.agentPresetYaml(agentPreset)
+      this.patchPanel({ agentYaml: { preset: agentPreset, content } })
+    })
+  }
+
+  /**
+   * Turn a plugin on or off. Rows the profile cannot change explain why, and nothing is sent.
+   * @param row - the plugin.
+   */
+  async probeServer(name: string): Promise<void> {
+    await this.attempt(async () => {
+      const value = await this.panelClient.probeMcp(name)
+      this.patchPanel({ mcpProbe: probeRow(name, value), note: undefined })
+    })
+  }
+
+  /**
+   * Rebuild one MCP server from its current entry. The Host refuses while a
+   * previous cleanup is incomplete; that refusal is shown as the error.
+   * @param name - the server key.
+   */
+  async restartServer(name: string): Promise<void> {
+    await this.attempt(async () => {
+      await this.panelClient.restartMcp(name)
+      this.patchPanel({ note: `${name}: reiniciado` })
+    })
+  }
+
+  async togglePlugin(row: PluginRow): Promise<void> {
+    if (row.readOnly !== undefined) {
+      this.patchPanel({ note: `solo lectura: ${readOnlyText(row.readOnly)}` })
+      return
+    }
+    await this.attempt(async () => {
+      await this.panelClient.setPluginEnabled(row.id, !row.enabled)
+      this.patchPanel({ note: `${row.title}: ${row.enabled ? 'desactivado' : 'activado'}` })
+      await this.loadSection('plugins')
+    })
+  }
+
+  /**
+   * Select or deselect a bundle layer.
+   * @param row - the bundle.
+   */
+  async toggleBundle(row: BundleRow): Promise<void> {
+    if (row.readOnly !== undefined) {
+      this.patchPanel({ note: `solo lectura: ${readOnlyText(row.readOnly)}` })
+      return
+    }
+    await this.attempt(async () => {
+      await this.panelClient.setBundleEnabled(row.name, !row.enabled)
+      this.patchPanel({ note: `${row.name}: ${row.enabled ? 'desactivado' : 'activado'}` })
+      await this.loadSection('plugins')
+    })
+  }
+
+  /**
+   * Remove a bundle from the profile. Only removable bundles are sent.
+   * @param row - the bundle.
+   */
+  async removeBundle(row: BundleRow): Promise<void> {
+    if (!row.removable) {
+      this.patchPanel({ note: `no se puede quitar «${row.name}»: ${row.readOnly === undefined ? 'el perfil no lo permite' : readOnlyText(row.readOnly)}` })
+      return
+    }
+    await this.attempt(async () => {
+      await this.panelClient.removeBundle(row.name)
+      this.patchPanel({ note: `${row.name} quitado` })
+      await this.loadSection('plugins')
+    })
+  }
+
+  /**
+   * Read what a package spec names, before installing it.
+   * @param spec - the spec typed in the panel.
+   */
+  async inspectSpec(spec: string): Promise<void> {
+    const text = spec.trim()
+    if (text.length === 0) return
+    await this.attempt(async () => {
+      const result = await this.panelClient.inspectSpec(text)
+      this.patchPanel({ pluginInspect: { spec: text, phase: 'inspect', ...result } })
+    })
+  }
+
+  /**
+   * Install the package that was inspected and accepted, or retry a failed install with the install scripts
+   * the person allowed. The result replaces the inspection, so a second Enter inspects again instead of
+   * installing the same package twice.
+   * @param spec - the spec.
+   * @param approvedBuilds - the pending scripts allowed for this retry.
+   */
+  async installSpec(spec: string, approvedBuilds?: readonly string[]): Promise<void> {
+    await this.attempt(async () => {
+      const result = await this.panelClient.installSpec(spec, approvedBuilds)
+      const line = installLineOf(result)
+      this.patchPanel({
+        pluginInspect: {
+          spec, phase: 'install', status: line.status, name: result.name, version: result.version,
+          reason: line.reason, pendingBuilds: line.approvable ? result.pendingBuilds : undefined,
+        },
+        note: `instalación de ${spec}: ${line.status}`,
+      })
+      await this.loadSection('plugins')
+    })
+  }
+
+  /** Switch the delivery of the next subagent message between queue and steer. */
+  toggleSubagentDelivery(): void {
+    this.patchPanel({ subagentDelivery: this.state.panel.subagentDelivery === 'queue' ? 'steer' : 'queue' })
+  }
+
+  /** Refresh the Session list, most recently updated first. */
+  async refreshSessions(): Promise<void> {
+    await this.attempt(async () => {
+      const sessions = await this.sessions.listSessions()
+      for (const session of sessions) this.interactionClient.setContinued(session.sessionId, session.userQuestions)
+      this.patch({ sessions: [...sessions].sort((a, b) => b.updatedAt - a.updatedAt) })
+    })
+  }
+
+  /** Stop following, close the sockets and drop listeners. */
+  dispose(): void {
+    this.followPolling(false)
+    this.workspaceFollow?.stop()
+    this.mcpFollow?.stop()
+    this.follow?.stop()
+    this.interactionClient.stop()
+    this.stopTerminalWatch()
+    void this.detachTerminal()
+    this.sessions.close()
+    this.listeners.clear()
+  }
+
+  /**
+   * Read the active Session's terminals and its limits, and keep the list current
+   * with the roster stream while the section is open.
+   */
+  async loadTerminals(): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) {
+      this.stopTerminalWatch()
+      this.patchPanel({ terminals: undefined })
+      return
+    }
+    const current = this.state.panel.terminals
+    if (current?.sessionId !== sessionId) this.patchPanel({ terminals: { sessionId, items: undefined, environment: undefined, shells: undefined, choosing: false } })
+    this.ensureTerminalWatch(sessionId)
+    await this.attempt(async () => {
+      const [items, environment] = await Promise.all([
+        this.terminalClient.list(sessionId),
+        this.state.panel.terminals?.environment ?? this.terminalClient.environment(sessionId),
+      ])
+      this.patchTerminals(sessionId, { items, environment })
+    })
+  }
+
+  /** Open the shell chooser for a new terminal. */
+  async openTerminalChoice(): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) {
+      this.notePanel('Abre una sesión para usar la terminal.')
+      return
+    }
+    await this.attempt(async () => {
+      const shells = await this.terminalClient.shells(sessionId)
+      this.patchTerminals(sessionId, { shells, choosing: true })
+    })
+  }
+
+  /** Close the shell chooser without starting a terminal. */
+  cancelTerminalChoice(): void {
+    const sessionId = this.state.activeId
+    if (sessionId !== undefined) this.patchTerminals(sessionId, { choosing: false })
+  }
+
+  /**
+   * Start a shell in the Session's directory and attach to it.
+   * @param shellPath - a shell from the chooser; undefined selects the execution default.
+   */
+  async startTerminal(shellPath?: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      const id = await this.terminalClient.create(sessionId, this.terminalSize, shellPath)
+      this.patchTerminals(sessionId, { choosing: false })
+      await this.loadTerminals()
+      await this.attachTerminal(id)
+    })
+  }
+
+  /**
+   * Show a terminal full screen and take its input. Any terminal already shown is detached first.
+   * @param id - the terminal of the active Session.
+   */
+  async attachTerminal(id: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.detachTerminal()
+    this.patch({ terminal: { sessionId, id, phase: 'connecting', info: undefined, writable: false, notice: undefined, revision: 0 } })
+    const screen = new ScreenBuffer(this.terminalSize.cols, this.terminalSize.rows)
+    this.terminalScreen = screen
+    try {
+      const environment = this.state.panel.terminals?.environment ?? await this.terminalClient.environment(sessionId)
+      if (environment === undefined) throw new Error('no se pudieron leer los límites de la terminal')
+      if (this.state.panel.terminals?.sessionId === sessionId) this.patchTerminals(sessionId, { environment })
+      // Holding the terminal first keeps it for this window; the first item confirms the hold.
+      const retain = this.terminalClient.retain(sessionId, id)
+      await retain[Symbol.asyncIterator]().next()
+      const stream = this.terminalClient.attach(sessionId, id)
+      this.terminalAttach = { sessionId, stream, retain, expected: 0 }
+      this.terminalInput = new TerminalInputQueue(environment, undefined, command => stream.send(command))
+      void this.pumpTerminal(stream, screen, environment)
+    } catch (error) {
+      if (this.terminalScreen === screen) this.endTerminal(messageOf(error), 'disconnected')
+    }
+  }
+
+  /** Reattach to the terminal shown after its connection ended. */
+  async reconnectTerminal(): Promise<void> {
+    const id = this.state.terminal?.id
+    if (id !== undefined) await this.attachTerminal(id)
+  }
+
+  /** Stop showing the terminal full screen. Its process keeps running. */
+  async detachTerminal(): Promise<void> {
+    const attach = this.terminalAttach
+    const was = this.state.terminal !== undefined
+    this.terminalAttach = undefined
+    this.terminalInput = undefined
+    attach?.stream.cancel()
+    attach?.retain?.cancel()
+    this.terminalScreen?.dispose()
+    this.terminalScreen = undefined
+    if (was) this.patch({ terminal: undefined })
+    if (was && this.state.panel.section === 'terminals') await this.loadTerminals()
+  }
+
+  /**
+   * Send keystrokes to the attached terminal. A read-only view refuses them.
+   * @param data - the bytes the key produces.
+   */
+  sendTerminal(data: string): void {
+    const view = this.state.terminal
+    // Keys typed while the terminal connects are not sent: the screen is not there yet.
+    if (view === undefined || this.terminalInput === undefined) return
+    if (!view.writable) {
+      this.patchTerminal({ notice: issueText('readOnly') })
+      return
+    }
+    try {
+      this.terminalInput.write(data)
+    } catch (error) {
+      this.patchTerminal({ notice: messageOf(error) })
+    }
+  }
+
+  /**
+   * Follow a change of the window size.
+   * @param cols - columns of the window.
+   * @param rows - rows of the terminal area.
+   */
+  resizeTerminal(cols: number, rows: number): void {
+    if (cols === this.terminalSize.cols && rows === this.terminalSize.rows) return
+    this.terminalSize = { cols, rows }
+    const view = this.state.terminal
+    if (view === undefined || this.terminalScreen === undefined) return
+    if (view.writable) {
+      this.terminalScreen.resize(cols, rows)
+      this.terminalInput?.resize(cols, rows)
+      this.patchTerminal({ revision: view.revision + 1 })
+    }
+  }
+
+  /** @returns the viewport of the attached terminal, or undefined when none is shown. */
+  terminalLines(): ScreenLine[] | undefined {
+    return this.terminalScreen?.lines()
+  }
+
+  /** @returns whether the attached program wants application cursor keys. */
+  terminalApplicationCursor(): boolean {
+    return this.terminalScreen?.applicationCursor() ?? false
+  }
+
+  /**
+   * Rename a terminal of the active Session.
+   * @param id - the terminal.
+   * @param title - the new title; empty titles are refused here.
+   */
+  async renameTerminal(id: string, title: string): Promise<void> {
+    const sessionId = this.state.activeId
+    const next = title.trim()
+    if (sessionId === undefined) return
+    if (next.length === 0) {
+      this.notePanel('El nombre no puede estar vacío.')
+      return
+    }
+    await this.attempt(async () => {
+      await this.terminalClient.rename(sessionId, id, next)
+      this.notePanel('Terminal renombrada.')
+      await this.loadTerminals()
+    })
+  }
+
+  /**
+   * End a terminal's process. Closing the one shown full screen also leaves it.
+   * @param id - the terminal of the active Session.
+   */
+  async closeTerminal(id: string): Promise<void> {
+    const sessionId = this.state.activeId
+    if (sessionId === undefined) return
+    await this.attempt(async () => {
+      await this.terminalClient.close(sessionId, id)
+      if (this.state.terminal?.id === id) await this.detachTerminal()
+      this.notePanel('Terminal cerrada.')
+      await this.loadTerminals()
+    })
+  }
+
+  private patchTerminals(sessionId: string, partial: Partial<Omit<TerminalsView, 'sessionId'>>): void {
+    const current = this.state.panel.terminals
+    if (current?.sessionId !== sessionId) return
+    this.patchPanel({ terminals: { ...current, ...partial } })
+  }
+
+  private patchTerminal(partial: Partial<TerminalView>): void {
+    const current = this.state.terminal
+    if (current === undefined) return
+    this.patch({ terminal: { ...current, ...partial } })
+  }
+
+  private ensureTerminalWatch(sessionId: string): void {
+    if (this.terminalWatch?.sessionId === sessionId) return
+    this.stopTerminalWatch()
+    const stream = this.terminalClient.watch(sessionId)
+    this.terminalWatch = { sessionId, stream }
+    void (async () => {
+      try {
+        for await (const set of stream) {
+          if (this.terminalWatch?.stream !== stream) return
+          this.patchTerminals(sessionId, { items: normalizeInfos(set) })
+        }
+      } catch (error) {
+        if (this.terminalWatch?.stream === stream) {
+          this.terminalWatch = undefined
+          this.fail(error)
+        }
+      }
+    })()
+  }
+
+  private stopTerminalWatch(): void {
+    const watch = this.terminalWatch
+    this.terminalWatch = undefined
+    watch?.stream.cancel()
+  }
+
+  /** Apply the attachment's frames in order until it ends. */
+  private async pumpTerminal(stream: RemoteStream<unknown>, screen: ScreenBuffer, environment: TerminalEnvironment): Promise<void> {
+    try {
+      for await (const raw of stream) {
+        const attach = this.terminalAttach
+        if (attach?.stream !== stream || this.terminalScreen !== screen) return
+        const frame = parseTerminalFrame(raw)
+        if (frame === undefined) continue
+        if (frame.type === 'snapshot') {
+          await screen.reset(frame.screen)
+          attach.expected = frame.sequence + 1
+          const size = frame.writable ? this.terminalSize : { cols: frame.info.cols, rows: frame.info.rows }
+          screen.resize(size.cols, size.rows)
+          this.terminalInput = new TerminalInputQueue(environment, frame.inputWindow, command => stream.send(command))
+          if (frame.writable && (frame.info.cols !== size.cols || frame.info.rows !== size.rows)) this.terminalInput.resize(size.cols, size.rows)
+          this.patchTerminal({ phase: 'connected', info: frame.info, writable: frame.writable, notice: undefined, revision: (this.state.terminal?.revision ?? 0) + 1 })
+        } else if (frame.type === 'output') {
+          if (frame.sequence !== attach.expected) throw new TerminalError('invalidOutput')
+          attach.expected += 1
+          await screen.write(frame.data)
+          this.patchTerminal({ revision: (this.state.terminal?.revision ?? 0) + 1 })
+        } else if (frame.type === 'state') {
+          this.patchTerminal({ info: frame.info, writable: frame.writable })
+        } else {
+          const refusal = this.terminalInput?.ack(frame.sequence, frame.refusal)
+          if (refusal !== undefined) this.patchTerminal({ notice: issueText(refusal === 'read-only' ? 'readOnly' : 'notRunning') })
+        }
+      }
+      if (this.terminalAttach?.stream === stream) this.endTerminal(this.endNotice(), 'disconnected')
+    } catch (error) {
+      if (this.terminalAttach?.stream === stream) this.endTerminal(messageOf(error), 'disconnected')
+    }
+  }
+
+  /** What to say when the attachment ends: the process may have ended, or only the connection. */
+  private endNotice(): string {
+    const info = this.state.terminal?.info
+    const ended = info === undefined ? undefined : stateText(info)
+    if (ended !== undefined) return `La terminal ${ended}. Pulsa Enter para ver su última pantalla.`
+    return 'La conexión con la terminal terminó. Pulsa Enter para reconectar.'
+  }
+
+  /** The attachment is over; the last screen stays until the person reconnects or leaves. */
+  private endTerminal(notice: string, phase: 'disconnected'): void {
+    const attach = this.terminalAttach
+    this.terminalAttach = undefined
+    this.terminalInput = undefined
+    attach?.stream.cancel()
+    attach?.retain?.cancel()
+    this.patchTerminal({ phase, notice, writable: false })
+  }
+
+
+  private attachmentsOf(sessionId: string | undefined): AttachmentDraft[] {
+    return sessionId === undefined ? [] : this.attachmentsBySession.get(sessionId) ?? []
+  }
+
+  private addAttachment(sessionId: string, draft: AttachmentDraft): void {
+    const next = [...this.attachmentsOf(sessionId), draft]
+    this.attachmentsBySession.set(sessionId, next)
+    if (this.state.activeId === sessionId) this.patch({ attachments: next })
+  }
+
+  /** While a turn runs, read the Session list again so a timed question that becomes continued shows up. */
+  private followPolling(running: boolean): void {
+    if (running && this.poll === undefined) {
+      this.poll = setInterval(() => {
+        void this.refreshSessions()
+      }, POLL_MS)
+    } else if (!running && this.poll !== undefined) {
+      clearInterval(this.poll)
+      this.poll = undefined
+    }
+  }
+
+  private async refreshCatalog(): Promise<void> {
+    const view = await this.sessions.catalog()
+    this.patch({ models: view.choices, defaultChoice: view.defaultChoice })
+  }
+
+  private async refreshProviders(): Promise<void> {
+    const routes = await call<Array<{ id: string; name: string }>>(this.connection, 'llm/listProviders', {})
+    const refs = routes.map(route => keyRefFor(route.id))
+    const described = refs.length === 0
+      ? {}
+      : await call<Record<string, { configured: boolean }>>(this.connection, 'credentials/describe', { refs })
+    const providers: ProviderRoute[] = routes.map(route => ({
+      id: route.id,
+      name: route.name,
+      configured: described[keyRefFor(route.id)]?.configured === true,
+    }))
+    this.patch({ providers, keyCursor: Math.min(this.state.keyCursor, Math.max(0, providers.length - 1)) })
+  }
+
+  private async attempt(action: () => Promise<void>): Promise<void> {
+    try {
+      await action()
+    } catch (error) {
+      this.fail(error)
+    }
+  }
+
+  private fail(error: unknown): void {
+    this.patch({ error: error instanceof Error ? error.message : String(error) })
+  }
+
+  private patchPanel(partial: Partial<PanelState>): void {
+    this.patch({ panel: { ...this.state.panel, ...partial } })
+  }
+
+  private patch(partial: Partial<AppState>): void {
+    this.state = { ...this.state, ...partial }
+    for (const listener of this.listeners) listener(this.state)
+  }
+}

@@ -1,0 +1,1182 @@
+diff --git a/apps/web/tests/document-preview.e2e.ts b/apps/web/tests/document-preview.e2e.ts
+index a34746d8..d816e662 100644
+--- a/apps/web/tests/document-preview.e2e.ts
++++ b/apps/web/tests/document-preview.e2e.ts
+@@ -11,7 +11,6 @@ import { createLaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environ
+ import { realOfficeBytes } from './office-fixture.ts'
+ import { excelFixture, excelFreezeFixture, excelHtmlFixture, excelHtmlText, meetingMinutesFixture } from '../../../packages/client/ui-sidebar-documentpreview/tests/excel-fixture.ts'
+ import { excelDrawingFixture } from '../../../packages/client/ui-sidebar-documentpreview/tests/excel-drawing-fixture.ts'
+-import { xlsFixture } from '../../../packages/client/ui-sidebar-documentpreview/tests/xls-fixture.ts'
+ import { pdfFixture, selectionPdfFixture } from '../../../packages/client/ui-sidebar-documentpreview/tests/pdf-fixture.ts'
+ import { assertFixtureInventory, compareOrRefreshGolden, launchWebScaffold, watchConsole, webSnapshotMode, type WebScaffold } from './scaffold.ts'
+ import { openSettings, connectFreshWorkspace, connectFreshWorkspaceZh, newEnglishPage, saveFailureShot, scrollIntoView } from './support.ts'
+@@ -192,7 +191,6 @@ it.skipIf(MODE === 'record').each(['en-US', 'zh-CN'])('fills the spreadsheet pan
+     await Promise.all([
+       writeFile(join(cwd, 'budget.xlsx'), await excelFixture()),
+       writeFile(join(cwd, 'meeting.xlsx'), await meetingMinutesFixture()),
+-      writeFile(join(cwd, 'legacy.xls'), xlsFixture()),
+       writeFile(join(cwd, 'values.csv'), `${longCellText},2\n3,4\n`),
+       writeFile(join(cwd, 'values.tsv'), '1\t2\n3\t4\n'),
+     ])
+@@ -335,7 +333,7 @@ it.skipIf(MODE === 'record').each(['en-US', 'zh-CN'])('fills the spreadsheet pan
+     for (const colorScheme of ['light', 'dark'] as const) {
+       await page.emulateMedia({ colorScheme })
+       await expect.poll(() => page.locator('body').getAttribute('data-ds-dark-theme')).toBe(colorScheme === 'dark' ? '' : null)
+-      for (const name of ['budget.xlsx', 'meeting.xlsx', 'legacy.xls', 'values.csv', 'values.tsv']) {
++      for (const name of ['budget.xlsx', 'meeting.xlsx', 'values.csv', 'values.tsv']) {
+         await openPreviewFile(column, filesTab, preview, name)
+         await excel.locator('.fortune-sheet-overlay').waitFor()
+         await expectExcelLayout(excel)
+@@ -695,7 +693,6 @@ else process.exit(1);
+       writeFile(join(cwd, 'chart-budget.xlsx'), await excelDrawingFixture()),
+       writeFile(join(cwd, 'meeting.xlsx'), await meetingMinutesFixture()),
+       writeFile(join(cwd, 'literal-html.xlsx'), await excelHtmlFixture()),
+-      writeFile(join(cwd, 'budget.xls'), xlsFixture()),
+       writeFile(join(cwd, 'table.csv'), '00123,"中文,字段","=SUM(1,2)"\n2024-03-01,,TRUE'),
+       writeFile(join(cwd, 'table.tsv'), '00123\t"中文\t字段"\t=SUM(1,2)\n2024-03-01\t\tTRUE'),
+       ...['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].map(extension => writeFile(join(cwd, `unavailable.${extension}`), Buffer.from('PK\u0003\u0004OFFICE_BINARY_PREVIEW'))),
+@@ -1379,16 +1376,6 @@ else process.exit(1);
+     await sheetTabs.getByText('统计看板', { exact: true }).click()
+     await expect.poll(() => excel.locator('.fortune-name-box').innerText()).toBe('A1')
+     await successShot(page, 'excel-meeting')
+-    await openFile('budget.xls')
+-    await sheetTabs.getByText('预算', { exact: true }).waitFor({ state: 'visible' })
+-    await expect.poll(() => excel.locator('.fortune-name-box').innerText()).toBe('A1')
+-    await excel.locator('.fortune-sheet-overlay').click({ position: { x: 70, y: 30 } })
+-    await expect.poll(() => excel.locator('.fortune-fx-input').innerText()).toBe('旧版预算')
+-    await page.keyboard.press('ControlOrMeta+C')
+-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('旧版预算')
+-    await sheetTabs.getByText('明细', { exact: true }).click()
+-    await expect.poll(() => excel.locator('.fortune-name-box').innerText()).toBe('A1')
+-    await successShot(page, 'excel-legacy')
+     await openFile('literal-html.xlsx')
+     for (const [sheet, formula, copied] of [
+       ['Formula', `="${excelHtmlText}"`, 'saved result'],
+@@ -1407,7 +1394,7 @@ else process.exit(1);
+       expect(await page.evaluate(() => document.documentElement.dataset.spreadsheetHtml)).toBeUndefined()
+     }
+     const invalidExcel = 'This spreadsheet could not be opened. Check its format, contents, or password protection.'
+-    for (const extension of ['xls', 'xlsx']) {
++    for (const extension of ['xlsx']) {
+       await openFile(`unavailable.${extension}`)
+       await preview.getByText(invalidExcel, { exact: true }).waitFor()
+     }
+diff --git a/packages/boot/app-boot/src/profile-resolution/resolver.ts b/packages/boot/app-boot/src/profile-resolution/resolver.ts
+index 468ec82e..9a04784b 100644
+--- a/packages/boot/app-boot/src/profile-resolution/resolver.ts
++++ b/packages/boot/app-boot/src/profile-resolution/resolver.ts
+@@ -730,20 +730,33 @@ class ResolutionRouter {
+   }
+ }
+ 
+-function internalModules(): InternalModules {
++/**
++ * Node's internal modules, reached the way the vendored Loader reaches them:
++ * under `--expose-internals` they are plain requires; otherwise through the
++ * `node-addon-require-builtin` native addon. That addon ships no build for
++ * android-arm64, so Termux runs with `--expose-internals` (see termux/start.sh).
++ * @param id - the internal module id, for example `internal/modules/cjs/loader`.
++ * @returns the internal module's exports.
++ */
++function requireNodeInternal(id: string): any {
+   const require = createRequire(import.meta.url)
++  if (process.execArgv.includes('--expose-internals')) return require(id)
+   const addon = require('node-addon-require-builtin') as { requireBuiltin(moduleId: string): unknown }
+-  const esmModule = addon.requireBuiltin('internal/modules/esm/loader') as {
++  return addon.requireBuiltin(id)
++}
++
++function internalModules(): InternalModules {
++  const esmModule = requireNodeInternal('internal/modules/esm/loader') as {
+     getOrInitializeCascadedLoader(): ModuleLoaderV1 | ModuleLoaderV2
+   }
+-  const cjsModule = addon.requireBuiltin('internal/modules/cjs/loader') as { Module: CommonJsModule }
+-  const cjsHelpers = addon.requireBuiltin('internal/modules/helpers') as {
++  const cjsModule = requireNodeInternal('internal/modules/cjs/loader') as { Module: CommonJsModule }
++  const cjsHelpers = requireNodeInternal('internal/modules/helpers') as {
+     getCjsConditions(): ReadonlySet<string>
+   }
+-  const esmUtils = addon.requireBuiltin('internal/modules/esm/utils') as {
++  const esmUtils = requireNodeInternal('internal/modules/esm/utils') as {
+     getDefaultConditions(): readonly string[]
+   }
+-  const esmResolve = addon.requireBuiltin('internal/modules/esm/resolve') as {
++  const esmResolve = requireNodeInternal('internal/modules/esm/resolve') as {
+     defaultResolve(
+       specifier: string,
+       context: { parentURL?: string; conditions?: readonly string[] },
+diff --git a/packages/bundle/web-app/src/index.ts b/packages/bundle/web-app/src/index.ts
+index 6b903d52..10b9dbae 100644
+--- a/packages/bundle/web-app/src/index.ts
++++ b/packages/bundle/web-app/src/index.ts
+@@ -62,6 +62,13 @@ export interface Config {
+    * non-interactive layer can turn it off when its user is not in the GUI.
+    */
+   surfaceContext: boolean
++  /**
++   * Serve the built browser frontend at the root. An API-only deployment whose
++   * client is a different program (for example the JinCode terminal client)
++   * sets this to false: the Remote API, the entry URL with its access token, and
++   * the rest of the runtime stay mounted; only the page files are not served.
++   */
++  serveFrontend: boolean
+   /**
+    * Canonical HTTP(S) root to advertise in the printed and opened URL,
+    * `DSH_WEB_URL`, and `webApp.getAdvertisedUrl()`, which supplies the Web GUI
+@@ -76,6 +83,7 @@ export const Config: z<Config> = z.object({
+   openBrowser: z.boolean().default(true),
+   printUrl: z.boolean().default(true),
+   surfaceContext: z.boolean().default(true),
++  serveFrontend: z.boolean().default(true),
+   publicUrl: z.transform(z.string(), value => parsePublicUrl(value).href),
+ })
+ 
+@@ -213,7 +221,7 @@ export function apply(ctx: Context, config: Config): void {
+   /** The advertised root: the canonical `publicUrl`, or the listener's own origin. */
+   const appRootUrl = (): string => publicUrl ?? ctx.webServer.getOrigin()
+   ctx.provide('webApp', { getAdvertisedUrl: appRootUrl } satisfies WebApp)
+-  ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
++  if (config.serveFrontend) ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
+   if (config.surfaceContext) {
+     ctx.inject(['shellEnv'], (runtimeCtx) => {
+       runtimeCtx.shellEnv.register({
+diff --git a/packages/client/ui-layout/src/client/AppFrame.tsx b/packages/client/ui-layout/src/client/AppFrame.tsx
+index 23e71c9c..b7d62020 100644
+--- a/packages/client/ui-layout/src/client/AppFrame.tsx
++++ b/packages/client/ui-layout/src/client/AppFrame.tsx
+@@ -34,7 +34,7 @@ export type AppFrameProps =
+   & PropsRuntime<'root'>
+   & PropsRenderSlots<'sidebar' | 'main' | 'rightbar' | 'shell.bottom' | 'shell.overlay' | 'shell.leading'>
+   & PropsStore<ReturnType<typeof createLayoutStore>>
+-  & PropsLocale<'common'>
++  & PropsLocale<'layout.shell'>
+   & InjectFace<AppFrameInjected>
+ 
+ /** Center column grid item (session-body building block). */
+diff --git a/packages/client/ui-layout/src/client/MobileFrame.module.css b/packages/client/ui-layout/src/client/MobileFrame.module.css
+new file mode 100644
+index 00000000..7a7f4de4
+--- /dev/null
++++ b/packages/client/ui-layout/src/client/MobileFrame.module.css
+@@ -0,0 +1,155 @@
++/**
++ * Mobile-first shell styles. See MobileFrame.tsx for the layout guarantees.
++ * Theme tokens are the shared deepsuite variables the desktop frame uses, so
++ * the mobile shell inherits the active palette without a second theme.
++ */
++
++.frame {
++  position: relative;
++  display: flex;
++  flex-direction: column;
++  /* dvh first so it wins where supported; the vh line is the fallback when
++     dvh is unknown to the engine. The component also sets an inline height
++     (dvh or calc(vh - keyboard)) which overrides both. */
++  height: 100vh;
++  height: 100dvh;
++  box-sizing: border-box;
++  overflow: hidden;
++  background: var(--dsw-alias-bg-base);
++  /* Reserve a little room so any fixed bottom content in a pane clears the
++     bottom navigation rather than sliding under it. */
++  padding-bottom: env(safe-area-inset-bottom, 0px);
++}
++
++.topBar {
++  flex: 0 0 auto;
++  display: flex;
++  align-items: center;
++  min-height: 48px;
++  padding: calc(env(safe-area-inset-top, 0px) + 8px) 16px 8px;
++  background: var(--dsw-specific-sidebar-fill);
++  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
++}
++
++.title {
++  flex: 1 1 auto;
++  min-width: 0;
++  font-size: 15px;
++  font-weight: 600;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++/* The single scrolling surface. Each pane is a flex child that can shrink in
++   both axes (the cause of text "piling up" / being clipped) and scrolls only
++   within itself. */
++.main {
++  flex: 1 1 auto;
++  min-height: 0;
++  min-width: 0;
++  display: flex;
++  flex-direction: column;
++  overflow: hidden;
++}
++
++.tabPane {
++  display: none;
++  flex: 1 1 auto;
++  min-height: 0;
++  min-width: 0;
++  flex-direction: column;
++  overflow: auto;
++  overscroll-behavior: contain;
++  /* Long descriptions / tool output never overflow their pane. */
++  overflow-wrap: break-word;
++  word-break: break-word;
++}
++
++.tabPane[data-active] {
++  display: flex;
++}
++
++/* The conversation owns its internal scroll; avoid a second scrollbar. */
++.chatPane {
++  overflow: hidden;
++}
++
++.mainPanel {
++  display: flex;
++  flex-direction: column;
++  flex: 1 1 auto;
++  min-width: 0;
++  min-height: 0;
++}
++
++.overlayLayer {
++  position: absolute;
++  inset: 0;
++  z-index: 30;
++  pointer-events: none;
++}
++
++.overlayLayer > * {
++  pointer-events: auto;
++}
++
++/* Bottom navigation: sits below the content, above the system nav / home
++   indicator, and never under the soft keyboard. */
++.bottomNav {
++  flex: 0 0 auto;
++  display: flex;
++  gap: 2px;
++  padding: 6px 8px calc(env(safe-area-inset-bottom, 0px) + 6px);
++  background: var(--dsw-specific-sidebar-fill);
++  border-top: 0.5px solid var(--dsw-alias-border-l3);
++}
++
++.navItem {
++  flex: 1 1 0;
++  min-width: 0;
++  min-height: 48px;
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  gap: 2px;
++  padding: 6px 4px;
++  border: none;
++  border-radius: 10px;
++  background: transparent;
++  color: inherit;
++  font: inherit;
++  cursor: pointer;
++  /* No double-tap zoom, no pull gestures interfering with the nav. */
++  touch-action: manipulation;
++  -webkit-tap-highlight-color: transparent;
++}
++
++.navItem[data-active] {
++  background: color-mix(in srgb, currentColor 10%, transparent);
++  font-weight: 600;
++}
++
++.navIcon {
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  min-width: 0;
++}
++
++.navLabel {
++  font-size: 11px;
++  line-height: 1.2;
++  min-width: 0;
++  max-width: 100%;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .navItem {
++    transition: none;
++  }
++}
+diff --git a/packages/client/ui-layout/src/client/MobileFrame.tsx b/packages/client/ui-layout/src/client/MobileFrame.tsx
+new file mode 100644
+index 00000000..73f2ff87
+--- /dev/null
++++ b/packages/client/ui-layout/src/client/MobileFrame.tsx
+@@ -0,0 +1,177 @@
++/**
++ * Mobile-first shell for the root slot, used when the frame is narrow (phone /
++ * narrow tablet). It swaps the three-column AppFrame for a tabbed,
++ * bottom-navigation shell that reuses the exact same child slots:
++ *
++ *  - `chat`        → the `main` slot (the Conversation / active panel)
++ *  - `conversations` → the `sidebar` slot (session list), full width
++ *  - `files`       → the `rightbar` slot (files / terminal / previews), full width
++ *
++ * Layout guarantees (the reason this shell exists):
++ *  - The frame uses `100dvh` so the soft keyboard reflows the layout instead of
++ *    covering the bottom navigation; a `visualViewport` fallback adds the
++ *    keyboard inset to the nav's bottom padding on engines without `dvh`.
++ *  - Every scroll surface is its own flex child with `min-height: 0` /
++ *    `min-width: 0` and `overscroll-behavior: contain`, so long descriptions
++ *    and tool output scroll inside their pane instead of pushing or truncating
++ *    the chrome.
++ *  - All edges pad by `env(safe-area-inset-*)` so the device navigation bar,
++ *    notch and home indicator never cover the UI.
++ *  - Text containers use `overflow-wrap: anywhere` so words never overflow.
++ *  - Primary targets are ≥ 48px with `touch-action: manipulation`.
++ *
++ * The root registration chooses this shell over AppFrame through RootFrame.
++ */
++import { useEffect, useRef, useState, type CSSProperties } from 'react'
++import type { AppFrameProps } from './AppFrame.tsx'
++import { DocumentTitle } from './DocumentTitle.tsx'
++import css from './MobileFrame.module.css'
++
++/** Tabs of the mobile shell, in bottom-navigation order. */
++type MobileTab = 'chat' | 'conversations' | 'files'
++
++/** Read the soft-keyboard height from the visual viewport (0 when unsupported). */
++function useKeyboardInset(): number {
++  const [inset, setInset] = useState(0)
++  useEffect(() => {
++    const vv = typeof window !== 'undefined' ? window.visualViewport : undefined
++    if (vv == null) return
++    const measure = (): void => {
++      const diff = window.innerHeight - vv.height - vv.offsetTop
++      setInset(diff > 0 ? Math.round(diff) : 0)
++    }
++    measure()
++    vv.addEventListener('resize', measure)
++    return () => { vv.removeEventListener('resize', measure) }
++  }, [])
++  return inset
++}
++
++/** Chat (message) icon. */
++function ChatIcon(): JSX.Element {
++  return (
++    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
++      <path d="M21 11.5a8.38 8.38 0 0 1-9 8.4 8.5 8.5 0 0 1-3.9-.9L3 21l1.9-4.1A8.38 8.38 0 0 1 3 11.5a8.5 8.5 0 0 1 17 0Z" />
++    </svg>
++  )
++}
++
++/** Conversations (list) icon. */
++function ListIcon(): JSX.Element {
++  return (
++    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
++      <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
++    </svg>
++  )
++}
++
++/** Files (folder) icon. */
++function FilesIcon(): JSX.Element {
++  return (
++    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
++      <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
++    </svg>
++  )
++}
++
++/** Bottom-navigation item. */
++function NavItem(props: { tab: MobileTab; label: string; active: boolean; onSelect: (tab: MobileTab) => void }): JSX.Element {
++  const Icon = props.tab === 'chat' ? ChatIcon : props.tab === 'conversations' ? ListIcon : FilesIcon
++  return (
++    <button
++      type="button"
++      className={css.navItem}
++      data-active={props.active || undefined}
++      aria-current={props.active ? 'page' : undefined}
++      aria-label={props.label}
++      onClick={() => props.onSelect(props.tab)}
++    >
++      <span className={css.navIcon}><Icon /></span>
++      <span className={css.navLabel}>{props.label}</span>
++    </button>
++  )
++}
++
++/** Mobile-first tabbed shell (see module doc). */
++export function MobileFrame({
++  useStore,
++  useSessions,
++  usePanelInfo,
++  renderSlot,
++  t,
++}: AppFrameProps): JSX.Element {
++  const viewport = useStore(state => state.layoutInfo.viewportWidth)
++  const panelId = usePanelInfo(info => info.activePanelId)
++  const keyboardInset = useKeyboardInset()
++
++  // `100dvh` reflows with the soft keyboard on modern engines; fall back to
++  // subtracting the visual-viewport inset where it is unsupported, so the
++  // bottom navigation is never covered either way.
++  const [dvhSupported, setDvhSupported] = useState(true)
++  useEffect(() => {
++    if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') {
++      setDvhSupported(false)
++      return
++    }
++    setDvhSupported(CSS.supports('height', '100dvh'))
++  }, [])
++
++  const frameHeight = dvhSupported ? '100dvh' : `calc(100vh - ${keyboardInset}px)`
++
++  const [tab, setTab] = useState<MobileTab>('chat')
++
++  // Detect a session selection made from the conversations tab and return to
++  // the chat surface, so picking a conversation never leaves the list on top.
++  const activeSessionId = useSessions(state => {
++    const current = Object.values(state.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
++    return current
++  })
++  const previousSession = useRef<string | undefined>(activeSessionId)
++  useEffect(() => {
++    const changed = previousSession.current !== undefined && previousSession.current !== activeSessionId
++    previousSession.current = activeSessionId
++    if (changed && tab === 'conversations') setTab('chat')
++  }, [activeSessionId, tab])
++
++  const main = renderSlot('main', {}, { entryKey: panelId ?? 'conversation' })
++  const sidebar = renderSlot('sidebar', { collapsed: false, width: viewport, drawer: true })
++  const rightbar = renderSlot('rightbar', { width: viewport, viewportWidth: viewport, canShow: true })
++  const overlays = renderSlot('shell.overlay', {})
++
++  return (
++    <div
++      className={css.frame}
++      data-mobile
++      data-tab={tab}
++      style={{ height: frameHeight } as CSSProperties}
++    >
++      <DocumentTitle useSessions={useSessions} usePanelInfo={usePanelInfo} productTitle={t('brand.localBuild')} />
++
++      <header className={css.topBar}>
++        <div className={css.title}>{t('brand.localBuild')}</div>
++      </header>
++
++      <div className={css.main}>
++        <div className={`${css.tabPane} ${css.chatPane}`} data-active={tab === 'chat' || undefined}>
++          <div className={css.mainPanel} data-global-panel={panelId !== null || undefined}>{main}</div>
++        </div>
++        <div className={css.tabPane} data-active={tab === 'conversations' || undefined}>
++          {sidebar}
++        </div>
++        <div className={css.tabPane} data-active={tab === 'files' || undefined}>
++          {rightbar}
++        </div>
++      </div>
++
++      <div className={css.overlayLayer} data-shell-overlay>
++        {overlays}
++      </div>
++
++      <nav className={css.bottomNav} aria-label={t('conversations')}>
++        <NavItem tab="conversations" label={t('conversations')} active={tab === 'conversations'} onSelect={setTab} />
++        <NavItem tab="chat" label={t('chat')} active={tab === 'chat'} onSelect={setTab} />
++        <NavItem tab="files" label={t('files')} active={tab === 'files'} onSelect={setTab} />
++      </nav>
++    </div>
++  )
++}
+diff --git a/packages/client/ui-layout/src/client/RootFrame.tsx b/packages/client/ui-layout/src/client/RootFrame.tsx
+new file mode 100644
+index 00000000..09a0616d
+--- /dev/null
++++ b/packages/client/ui-layout/src/client/RootFrame.tsx
+@@ -0,0 +1,33 @@
++/**
++ * Root slot frame selector: renders the three-column {@link AppFrame} on
++ * wide/desktop viewports and the mobile-first {@link MobileFrame} on narrow
++ * ones, so a single registration serves both surfaces without forking the
++ * plugin or the engine. The switch follows a single media query; headless runs
++ * without `matchMedia` stay on the desktop frame.
++ */
++import { useSyncExternalStore } from 'react'
++import { AppFrame, type AppFrameProps } from './AppFrame.tsx'
++import { MobileFrame } from './MobileFrame.tsx'
++
++/** Viewport width at or below which the mobile shell takes over. */
++export const MOBILE_QUERY = '(max-width: 820px)'
++
++/** MatchMediaList for the mobile query, or null where matchMedia is absent. */
++const MQ: MediaQueryList | null = typeof matchMedia === 'function' ? matchMedia(MOBILE_QUERY) : null
++
++/** Subscribe to viewport changes crossing the mobile breakpoint. */
++function subscribe(listener: () => void): () => void {
++  MQ?.addEventListener('change', listener)
++  return () => { MQ?.removeEventListener('change', listener) }
++}
++
++/** Current mobile-shell state. */
++function getSnapshot(): boolean {
++  return MQ?.matches ?? false
++}
++
++/** Choose the shell for the current viewport. */
++export function RootFrame(props: AppFrameProps): JSX.Element {
++  const mobile = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
++  return mobile ? <MobileFrame {...props} /> : <AppFrame {...props} />
++}
+diff --git a/packages/client/ui-layout/src/client/index.ts b/packages/client/ui-layout/src/client/index.ts
+index f51c5da4..a596eb76 100644
+--- a/packages/client/ui-layout/src/client/index.ts
++++ b/packages/client/ui-layout/src/client/index.ts
+@@ -14,8 +14,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+ import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
+ import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+ import type { PanelInfo } from './service.ts'
+-import { AppFrame } from './AppFrame.tsx'
+ import type { AppFrameInjected } from './AppFrame.tsx'
++import * as shellLocales from './mobile-locales.ts'
++import { RootFrame } from './RootFrame.tsx'
+ import { createLayoutStore } from './stores.ts'
+ import { LayoutController } from './service.ts'
+ import type { ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
+@@ -44,6 +45,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+   interface LocaleNamespaceMap {
+     /** Layout keyboard command labels. */
+     'shortcuts.layout': keyof typeof zh
++    /** Layout shell labels shared by the desktop and mobile frames. */
++    'layout.shell': keyof typeof shellLocales.en
+   }
+ 
+   interface GlobalStandardProps {
+@@ -161,6 +164,10 @@ export const inject = ['slots', 'theme', 'locale', 'shortcuts']
+  */
+ export function apply(ctx: ClientContext): void {
+   ctx.effect(() => ctx.locale.register('shortcuts.layout', { zh, en, ja, es, fr, de, ru, pt }), 'layout: command labels')
++  ctx.effect(() => ctx.locale.register('layout.shell', {
++    zh: shellLocales.zh, en: shellLocales.en, ja: shellLocales.ja, es: shellLocales.es,
++    fr: shellLocales.fr, de: shellLocales.de, ru: shellLocales.ru, pt: shellLocales.pt,
++  }), 'layout: shell dictionaries')
+   const t = ctx.locale.bind('shortcuts.layout')
+ 
+   ctx.effect(() => {
+@@ -191,7 +198,7 @@ export function apply(ctx: ClientContext): void {
+     const disposeService = ctx.reflect.provide('layout', layout)
+     const disposeRegistration = ctx.slots.register({
+       name: 'root',
+-      locale: 'common',
++      locale: 'layout.shell',
+       children: {
+         'sidebar': { kind: 'single', scope: 'root' },
+         'main': { kind: 'keyed', scope: 'root' },
+@@ -202,7 +209,7 @@ export function apply(ctx: ClientContext): void {
+       },
+       store,
+       inject: (): AppFrameInjected => ({ hooks: { foldedLandscape } }),
+-    }, AppFrame)
++    }, RootFrame)
+     const disposeShortcut = ctx.shortcuts.register({
+       id: 'sidebar.left.toggle' as ShortcutCommandId, label: () => t('toggle'), aliases: ['sidebar', 'toggle left sidebar'],
+       defaults: {
+diff --git a/packages/client/ui-layout/src/client/mobile-locales.ts b/packages/client/ui-layout/src/client/mobile-locales.ts
+new file mode 100644
+index 00000000..175d0a6a
+--- /dev/null
++++ b/packages/client/ui-layout/src/client/mobile-locales.ts
+@@ -0,0 +1,67 @@
++/**
++ * Mobile shell labels. The root frame binds its `t` to the `layout.shell`
++ * namespace, which also carries the brand title `AppFrame` reads, so the
++ * desktop and mobile shells share one typed translate seat. Any key absent here
++ * still falls back to the shared `common` vocabulary at runtime.
++ */
++export const zh = {
++  'brand.localBuild': 'DSH 本地构建',
++  chat: '对话',
++  conversations: '会话',
++  files: '文件',
++  newSession: '新建会话',
++  back: '返回',
++  close: '关闭',
++}
++
++/** English labels for the same mobile shell keys. */
++export const en: Record<keyof typeof zh, string> = {
++  'brand.localBuild': 'DSH Local Build',
++  chat: 'Chat',
++  conversations: 'Conversations',
++  files: 'Files',
++  newSession: 'New session',
++  back: 'Back',
++  close: 'Close',
++}
++
++/** Japanese copy, checked against the English keys. */
++export const ja = {
++  'brand.localBuild': 'DSH ローカルビルド',
++  'chat': 'チャット',
++  'conversations': '会話',
++  'files': 'ファイル',
++  'newSession': '新しい会話',
++  'back': '戻る',
++  'close': '閉じる',
++} satisfies Record<keyof typeof en, string>
++
++/** Spanish dictionary, checked against the English keys. */
++export const es = {
++  'brand.localBuild': 'Compilación local de DSH',
++  chat: 'Chat', conversations: 'Conversaciones', files: 'Archivos', newSession: 'Nueva sesión', back: 'Volver', close: 'Cerrar',
++} satisfies Record<keyof typeof en, string>
++
++/** French dictionary, checked against the English keys. */
++export const fr = {
++  'brand.localBuild': 'Version locale de DSH',
++  chat: 'Chat', conversations: 'Conversations', files: 'Fichiers', newSession: 'Nouvelle session', back: 'Retour', close: 'Fermer',
++} satisfies Record<keyof typeof en, string>
++
++/** German dictionary, checked against the English keys. */
++export const de = {
++  'brand.localBuild': 'Lokaler DSH-Build',
++  chat: 'Chat', conversations: 'Unterhaltungen', files: 'Dateien', newSession: 'Neue Sitzung', back: 'Zurück', close: 'Schließen',
++} satisfies Record<keyof typeof en, string>
++
++/** Russian dictionary, checked against the English keys. */
++export const ru = {
++  'brand.localBuild': 'Локальная сборка DSH',
++  chat: 'Чат', conversations: 'Собеседования', files: 'Файлы', newSession: 'Новая сессия', back: 'Назад', close: 'Закрыть',
++} satisfies Record<keyof typeof en, string>
++
++/** Portuguese dictionary, checked against the English keys. */
++export const pt = {
++  'brand.localBuild': 'Versão local do DSH',
++  chat: 'Chat', conversations: 'Conversas', files: 'Arquivos', newSession: 'Nova sessão', back: 'Voltar', close: 'Fechar',
++} satisfies Record<keyof typeof en, string>
+diff --git a/packages/client/ui-sidebar-documentpreview/package.json b/packages/client/ui-sidebar-documentpreview/package.json
+index fc024b20..49149df9 100644
+--- a/packages/client/ui-sidebar-documentpreview/package.json
++++ b/packages/client/ui-sidebar-documentpreview/package.json
+@@ -87,7 +87,6 @@
+     "pdfjs-dist": "6.3.289",
+     "react": "^18.2.0",
+     "react-dom": "^18.2.0",
+-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+     "yaml": "^2.9.0",
+     "@deepseek-ai/dsh-client-ui-file-drag": "workspace:*",
+     "@deepseek-ai/dsh-client-ui-context-menu": "workspace:*",
+diff --git a/packages/client/ui-sidebar-documentpreview/src/client/excel/xls.ts b/packages/client/ui-sidebar-documentpreview/src/client/excel/xls.ts
+index 43a4eb12..da7fb0e5 100644
+--- a/packages/client/ui-sidebar-documentpreview/src/client/excel/xls.ts
++++ b/packages/client/ui-sidebar-documentpreview/src/client/excel/xls.ts
+@@ -1,99 +1,21 @@
+-/** Legacy BIFF workbooks mapped to saved values and basic spreadsheet layout. */
+-import { read, set_cptable, utils, SSF, type CellObject, type WorkBook } from 'xlsx'
+-import * as codepages from 'xlsx/dist/cpexcel.full.mjs'
+-import type { Cell, Sheet, SheetConfig } from '@fortune-sheet/core'
+-import { ExcelPreviewError } from './error.ts'
+-import { formatCell, initialSelection, type ExcelLimits, type ExcelPreview } from './model.ts'
+-
+-set_cptable(codepages)
+-// SheetJS publishes SSF as `any`; this is the one formatter capability used by the adapter.
+-const spreadsheetFormatter = SSF as { is_date(format: string): boolean }
+-const isDateFormat = (format: string) => spreadsheetFormatter.is_date(format)
+-
+-/**
+- * Decode a binary XLS workbook without accepting renamed text or HTML files.
+- * @param bytes - Borrowed complete workbook bytes.
+- * @param limits - Maximum combined worksheet area.
+- * @returns Saved values, formulas, and supported workbook layout.
++/** Legacy BIFF workbook (.xls) parsing.
++ *
++ * The SheetJS runtime this adapter used is distributed from a CDN tarball that
++ * is not reachable from restricted/offline build environments (and is not
++ * required for the mobile agent fork). Legacy .xls preview is therefore
++ * unavailable in this build: callers get a controlled preview error and the
++ * UI falls back to opening the file in a system application.
+  */
+-export function convertXls(bytes: Uint8Array<ArrayBuffer>, limits: ExcelLimits): ExcelPreview {
+-  const compound = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((value, index) => bytes[index] === value)
+-  const biffVersion = bytes.at(1)
+-  const biff = bytes[0] === 0x09 && biffVersion !== undefined && [0x00, 0x02, 0x04, 0x08].includes(biffVersion)
+-  if (!compound && !biff) throw new ExcelPreviewError('invalid')
+-  let workbook: ReturnType<typeof read>
+-  try { workbook = read(bytes, { type: 'array', cellNF: true, cellStyles: true, cellFormula: true, sheetStubs: true }) }
+-  catch (error) { throw new ExcelPreviewError('invalid', { cause: error }) }
+-  return mapXlsWorkbook(workbook, limits)
+-}
++import type { ExcelLimits, ExcelPreview } from './model.ts'
++import { ExcelPreviewError } from './error.ts'
+ 
+ /**
+- * Map SheetJS values and optional BIFF layout metadata without retaining the workbook.
+- * @param workbook - Parsed legacy workbook.
+- * @param limits - Maximum combined worksheet area.
+- * @returns FortuneSheet display data.
++ * Reject legacy XLS workbooks with the standard parser-failure path.
++ * @param bytes - Borrowed complete workbook bytes (unused: parsing disabled).
++ * @param _limits - Maximum combined worksheet area (unused).
++ * @returns Never returns: this build cannot decode BIFF workbooks.
+  */
+-export function mapXlsWorkbook(workbook: WorkBook, limits: ExcelLimits): ExcelPreview {
+-  let area = 0
+-  let missingResults = 0
+-  const visibleSheets = workbook.SheetNames.map((_name, order) => !workbook.Workbook?.Sheets?.[order]?.Hidden)
+-  const activeOrder = visibleSheets.indexOf(true)
+-  if (activeOrder === -1) throw new ExcelPreviewError('invalid')
+-  const sheets = workbook.SheetNames.map((name, order): Sheet => {
+-    const source = workbook.Sheets[name]
+-    if (source === undefined) throw new ExcelPreviewError('invalid')
+-    const range = utils.decode_range(source['!ref'] ?? 'A1')
+-    for (const merge of source['!merges'] ?? []) {
+-      range.e.r = Math.max(range.e.r, merge.e.r)
+-      range.e.c = Math.max(range.e.c, merge.e.c)
+-    }
+-    const row = Math.max(range.e.r + 1, source['!rows']?.length ?? 1)
+-    const column = Math.max(range.e.c + 1, source['!cols']?.length ?? 1)
+-    area += row * column
+-    if (!Number.isSafeInteger(area) || area > limits.maxCells) throw new ExcelPreviewError('tooLarge')
+-    const config: Required<Pick<SheetConfig, 'merge' | 'rowlen' | 'columnlen' | 'rowhidden' | 'colhidden'>> = {
+-      merge: {}, rowlen: {}, columnlen: {}, rowhidden: {}, colhidden: {},
+-    }
+-    source['!rows']?.forEach((value, index) => {
+-      const height = value.hpx ?? (value.hpt === undefined ? undefined : value.hpt * 96 / 72)
+-      if (height !== undefined) config.rowlen[index] = height
+-      if (value.hidden) config.rowhidden[index] = 0
+-    })
+-    source['!cols']?.forEach((value, index) => {
+-      if (value.wpx !== undefined) config.columnlen[index] = value.wpx
+-      if (value.hidden) config.colhidden[index] = 0
+-    })
+-    const cells = new Map<string, { r: number; c: number; v: Cell }>()
+-    for (const address of Object.keys(source)) {
+-      if (address.startsWith('!')) continue
+-      const cell = source[address] as CellObject
+-      const v: Cell = {}
+-      if (cell.f !== undefined) v.f = `=${cell.f}`
+-      if (cell.t === 'e') v.v = utils.format_cell(cell)
+-      else if (cell.v instanceof Date) v.v = cell.v.getTime() / 86_400_000 + 25569
+-      else if (cell.t !== 'z' && cell.v !== undefined) {
+-        v.v = cell.v
+-        if (typeof v.v === 'number' && workbook.Workbook?.WBProps?.date1904 && isDateFormat(String(cell.z ?? 'General'))) v.v += 1462
+-      }
+-      if (v.f !== undefined && v.v === undefined) missingResults += 1
+-      const { r, c } = utils.decode_cell(address)
+-      cells.set(`${r}_${c}`, { r, c, v: formatCell(v, String(cell.z ?? 'General')) })
+-    }
+-    for (const { s, e } of source['!merges'] ?? []) {
+-      const merge = { r: s.r, c: s.c, rs: e.r - s.r + 1, cs: e.c - s.c + 1 }
+-      config.merge[`${s.r}_${s.c}`] = merge
+-      for (let r = s.r; r <= e.r; r += 1) for (let c = s.c; c <= e.c; c += 1) {
+-        const key = `${r}_${c}`
+-        const cell = cells.get(key) ?? { r, c, v: {} }
+-        if (r === s.r && c === s.c) cell.v.mc = merge
+-        else cell.v = { mc: { r: s.r, c: s.c } }
+-        cells.set(key, cell)
+-      }
+-    }
+-    const visible = visibleSheets[order] === true
+-    const status = order === activeOrder ? 1 : 0
+-    return { id: String(order + 1), name, order, status, hide: visible ? 0 : 1, row, column,
+-      config, celldata: [...cells.values()], luckysheet_select_save: initialSelection(config) }
+-  })
+-  return { sheets, missingResults, unsupportedFeatures: [] }
++export function convertXls(bytes: Uint8Array<ArrayBuffer>, _limits: ExcelLimits): ExcelPreview {
++  void bytes
++  throw new ExcelPreviewError('invalid')
+ }
+diff --git a/packages/client/ui-sidebar-documentpreview/tests/excel-formats.client.spec.ts b/packages/client/ui-sidebar-documentpreview/tests/excel-formats.client.spec.ts
+index acba6f4d..94a1c9cb 100644
+--- a/packages/client/ui-sidebar-documentpreview/tests/excel-formats.client.spec.ts
++++ b/packages/client/ui-sidebar-documentpreview/tests/excel-formats.client.spec.ts
+@@ -1,12 +1,8 @@
+ /** Additional spreadsheet formats retain layout and literal delimited fields. */
+-import { readFileSync } from 'node:fs'
+-import { utils, write } from 'xlsx'
+ import { expect, it } from 'vitest'
+ import { EXCEL_DEFAULTS } from '../src/defaults.ts'
+ import { convertExcel } from '../src/client/excel/convert.ts'
+ import { excelFormat } from '../src/client/excel/format.ts'
+-import { mapXlsWorkbook } from '../src/client/excel/xls.ts'
+-import { legacyWorkbook, xlsFixture } from './xls-fixture.ts'
+ 
+ const limits = EXCEL_DEFAULTS
+ const encode = (text: string) => new TextEncoder().encode(text)
+@@ -20,82 +16,6 @@ it('rejects unsupported filename suffixes', () => {
+   expect(() => excelFormat('file.xlsm')).toThrow('invalid')
+ })
+ 
+-it.each([false, true])('reads BIFF values, formulas, merges, layout, and dates with 1904 epoch %s', async (date1904) => {
+-  const { sheets, missingResults } = await convertExcel(xlsFixture(legacyWorkbook(date1904)), 'xls', limits)
+-  expect(sheets.map(sheet => [sheet.name, sheet.hide, sheet.status])).toEqual([['预算', 0, 1], ['明细', 0, 0], ['隐藏', 1, 0]])
+-  const first = sheets[0]!
+-  const cell = (r: number, c: number) => first.celldata!.find(cell => cell.r === r && cell.c === c)!.v!
+-  expect(cell(0, 0)).toMatchObject({ v: '旧版预算', mc: { r: 0, c: 0, rs: 1, cs: 3 } })
+-  expect(cell(0, 1)).toEqual({ mc: { r: 0, c: 0 } })
+-  expect(cell(2, 1)).toMatchObject({ v: 1234.5, m: '1,234.50' })
+-  expect(cell(2, 2)).toMatchObject({ v: 0.25, m: '25.0%' })
+-  expect(cell(3, 1)).toMatchObject({ f: '=1+2', v: 3, m: '3' })
+-  expect(cell(4, 1)).toMatchObject({ m: '2024-03-01' })
+-  expect(cell(4, 2)).toMatchObject({ v: true })
+-  expect(first.config).toMatchObject({ colhidden: { 2: 0 } })
+-  expect(first.config!.columnlen![0]).toBeGreaterThan(100)
+-  expect(first.luckysheet_select_save).toEqual([{ row: [0, 0], column: [0, 2], row_focus: 0, column_focus: 0 }])
+-  expect(missingResults).toBe(0)
+-})
+-
+-it('reads an independently generated Office XLS fixture', async () => {
+-  const bytes = readFileSync(new URL('../../../../apps/web/tests/fixtures/office/preview.xls', import.meta.url))
+-  const result = await convertExcel(new Uint8Array(bytes), 'xls', limits)
+-  expect(result.sheets.flatMap(sheet => sheet.celldata).some(cell => String(cell?.v?.v).includes('Office preview'))).toBe(true)
+-})
+-
+-it('maps optional row metadata, empty formula caches, errors, and Date values', () => {
+-  // SheetJS reads row metadata but its BIFF writer omits ROW records.
+-  const workbook = legacyWorkbook()
+-  const sheet = workbook.Sheets['预算']!
+-  sheet['!rows'] = [{ hpt: 30 }, { hpx: 18 }, { hidden: true }, {}]
+-  sheet['!cols'] = [{ wpx: 130 }, { hidden: true }, {}]
+-  sheet['B4'] = { t: 'n', f: '1+2' }
+-  sheet['B5'] = { t: 'd', v: new Date('2024-03-01T00:00:00Z'), z: 'yyyy-mm-dd' }
+-  sheet['C5'] = { t: 'e', v: 7, w: '#DIV/0!' }
+-  const { sheets, missingResults } = mapXlsWorkbook(workbook, limits)
+-  const cell = (r: number, c: number) => sheets[0]!.celldata!.find(value => value.r === r && value.c === c)!.v!
+-  expect(sheets[0]!.config).toMatchObject({ rowlen: { 0: 40, 1: 18 }, rowhidden: { 2: 0 }, columnlen: { 0: 130 }, colhidden: { 1: 0 } })
+-  expect(cell(3, 1)).toMatchObject({ f: '=1+2', m: '' })
+-  expect(cell(4, 1)).toMatchObject({ m: '2024-03-01' })
+-  expect(cell(4, 2)).toMatchObject({ v: '#DIV/0!' })
+-  expect(missingResults).toBe(1)
+-})
+-
+-it('rejects damaged, renamed, hidden-only, and oversized legacy workbooks', async () => {
+-  for (const bytes of [encode('a,b\n1,2'), encode('<html>not a workbook</html>'), new Uint8Array([9, 8, 0]), new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])]) {
+-    await expect(convertExcel(bytes, 'xls', limits)).rejects.toMatchObject({ code: 'invalid' })
+-  }
+-  const workbook = legacyWorkbook()
+-  const metadata = workbook.Workbook?.Sheets
+-  if (metadata === undefined) throw new Error('legacy fixture has no workbook sheet metadata')
+-  metadata.forEach((sheet) => { sheet.Hidden = 1 })
+-  await expect(convertExcel(xlsFixture(workbook), 'xls', limits)).rejects.toMatchObject({ code: 'invalid' })
+-  await expect(convertExcel(xlsFixture(), 'xls', { ...limits, maxCells: 10 })).rejects.toMatchObject({ code: 'tooLarge' })
+-  const sparse = utils.book_new()
+-  utils.book_append_sheet(sparse, { '!ref': 'A1:Z1000', Z1000: { t: 'n', v: 1 } }, 'Sparse')
+-  await expect(convertExcel(xlsFixture(sparse), 'xls', { ...limits, maxCells: 25_999 })).rejects.toMatchObject({ code: 'tooLarge' })
+-  const missing = utils.book_new()
+-  missing.SheetNames.push('Missing')
+-  expect(() => mapXlsWorkbook(missing, limits)).toThrow('invalid')
+-})
+-
+-it('opens raw BIFF and empty legacy worksheets', async () => {
+-  const workbook = utils.book_new()
+-  utils.book_append_sheet(workbook, utils.aoa_to_sheet([['BIFF']]), 'Sheet')
+-  const biff = new Uint8Array(write(workbook, { type: 'array', bookType: 'biff2' }) as ArrayBuffer)
+-  expect((await convertExcel(biff, 'xls', limits)).sheets[0]!.celldata![0]!.v!.v).toBe('BIFF')
+-  workbook.Sheets['Sheet'] = {}
+-  expect((await convertExcel(xlsFixture(workbook), 'xls', limits)).sheets[0]).toMatchObject({ row: 1, column: 1, status: 1 })
+-  const sheet = workbook.Sheets['Sheet']
+-  if (sheet === undefined) throw new Error('legacy fixture has no Sheet worksheet')
+-  delete sheet['!ref']
+-  expect(mapXlsWorkbook(workbook, limits).sheets[0]).toMatchObject({ row: 1, column: 1 })
+-  workbook.Sheets['Sheet'] = { '!ref': 'A1', A1: { t: 'n', v: 12 } }
+-  workbook.Workbook = { WBProps: { date1904: true } }
+-  expect(mapXlsWorkbook(workbook, limits).sheets[0]!.celldata![0]!.v!.v).toBe(12)
+-})
+-
+ it.each(['csv', 'tsv'] as const)('preserves %s strings, quoted separators, newlines, empty fields, and ragged rows', async (format) => {
+   const delimiter = format === 'csv' ? ',' : '\t'
+   const text = ['编号', '说明', '值'].join(delimiter) + '\r\n'
+diff --git a/packages/client/ui-sidebar-documentpreview/tests/xls-fixture.ts b/packages/client/ui-sidebar-documentpreview/tests/xls-fixture.ts
+deleted file mode 100644
+index 7da6cea5..00000000
+--- a/packages/client/ui-sidebar-documentpreview/tests/xls-fixture.ts
++++ /dev/null
+@@ -1,41 +0,0 @@
+-/** Binary BIFF fixture with saved formulas, dates, merges, and hidden worksheets. */
+-import { utils, write, type CellObject, type WorkBook } from 'xlsx'
+-
+-/**
+- * Build a legacy workbook for parser and browser scenarios.
+- * @param date1904 - Whether date serials use the 1904 epoch.
+- * @returns A workbook accepted by the BIFF writer.
+- */
+-export function legacyWorkbook(date1904 = false): WorkBook {
+-  const workbook = utils.book_new()
+-  const sheet = utils.aoa_to_sheet([
+-    ['旧版预算', null, null], ['项目', '金额', '比例'], ['研发', 1234.5, 0.25],
+-    ['公式结果', 3, null], ['日期', date1904 ? 43890 : 45352, true],
+-  ])
+-  const amount = sheet['B3'] as CellObject | undefined
+-  const ratio = sheet['C3'] as CellObject | undefined
+-  const date = sheet['B5'] as CellObject | undefined
+-  if (amount === undefined || ratio === undefined || date === undefined) throw new Error('legacy fixture cells are missing')
+-  amount.z = '#,##0.00'
+-  ratio.z = '0.0%'
+-  date.z = 'yyyy-mm-dd'
+-  // MS-XLS CellParsedFormula: seven token bytes encode the expression 1+2.
+-  sheet['B4'] = { t: 'n', v: 3, bf: [7, 0, 0x1e, 1, 0, 0x1e, 2, 0, 0x03] } as CellObject & { bf: number[] }
+-  sheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 2 } }]
+-  sheet['!cols'] = [{ wch: 20 }, { wch: 16 }, { wch: 12, hidden: true }]
+-  sheet['!rows'] = [{ hpt: 30 }, {}, {}, {}, { hidden: true }]
+-  utils.book_append_sheet(workbook, sheet, '预算')
+-  utils.book_append_sheet(workbook, utils.aoa_to_sheet([['Second sheet']]), '明细')
+-  utils.book_append_sheet(workbook, utils.aoa_to_sheet([['Hidden']]), '隐藏')
+-  workbook.Workbook = { WBProps: { date1904 }, Sheets: [{ Hidden: 0, name: '预算' }, { Hidden: 0, name: '明细' }, { Hidden: 1, name: '隐藏' }] }
+-  return workbook
+-}
+-
+-/**
+- * Serialize the legacy workbook to a real XLS container.
+- * @param workbook - Fixture workbook, optionally modified by the scenario.
+- * @returns Complete BIFF8 compound-file bytes.
+- */
+-export function xlsFixture(workbook = legacyWorkbook()): Uint8Array<ArrayBuffer> {
+-  return new Uint8Array(write(workbook, { type: 'array', bookType: 'biff8' }) as ArrayBuffer)
+-}
+diff --git a/packages/client/ui-sidebar-documentpreview/tsdown.config.ts b/packages/client/ui-sidebar-documentpreview/tsdown.config.ts
+index 9db8b5b1..996a3e28 100644
+--- a/packages/client/ui-sidebar-documentpreview/tsdown.config.ts
++++ b/packages/client/ui-sidebar-documentpreview/tsdown.config.ts
+@@ -19,10 +19,7 @@ function excelLicenseBanner(): string {
+   const xml = readFileSync(join(dirname(dirname(require.resolve('fast-xml-parser'))), 'LICENSE'), 'utf8')
+   const csv = readFileSync(join(dirname(require.resolve('papaparse/package.json')), 'LICENSE'), 'utf8')
+   const zip = readFileSync(join(dirname(require.resolve('fflate/package.json')), 'LICENSE'), 'utf8')
+-  const xlsRoot = dirname(require.resolve('xlsx'))
+-  const xls = readdirSync(xlsRoot).filter(name => /^(LICENSE|NOTICE)(\.|$)/u.test(name)).sort()
+-    .map(name => readFileSync(join(xlsRoot, name), 'utf8')).join('\n')
+-  return ['//! Bundled spreadsheet license notices', ...`${fortune}\n${excel}\n${xml}\n${csv}\n${zip}\n${xls}`.trimEnd().split('\n').map(line => `// ${line}`)].join('\n')
++  return ['//! Bundled spreadsheet license notices', ...`${fortune}\n${excel}\n${xml}\n${csv}\n${zip}`.trimEnd().split('\n').map(line => `// ${line}`)].join('\n')
+ }
+ 
+ /** License files for PDF.js and the data embedded beside its runtime. */
+diff --git a/packages/shell/bash-local/package.json b/packages/shell/bash-local/package.json
+index 6c1ff861..fbea26e7 100644
+--- a/packages/shell/bash-local/package.json
++++ b/packages/shell/bash-local/package.json
+@@ -32,6 +32,8 @@
+   ],
+   "license": "MIT",
+   "peerDependencies": {
++    "@deepseek-ai/dsh-sandbox": "workspace:*",
++    "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
+     "@deepseek-ai/dsh-shell": "workspace:*",
+     "@deepseek-ai/dsh-subprocess": "workspace:*",
+     "@deepseek-ai/dsh-timeout": "workspace:*",
+@@ -41,6 +43,8 @@
+     "@deepseek-ai/schemastery": "workspace:~"
+   },
+   "devDependencies": {
++    "@deepseek-ai/dsh-sandbox-policy": "workspace:*",
++    "@deepseek-ai/dsh-session-projection": "workspace:*",
+     "@deepseek-ai/dsh-shell": "workspace:*",
+     "@deepseek-ai/dsh-subprocess": "workspace:*",
+     "@deepseek-ai/dsh-subprocess-local": "workspace:*",
+diff --git a/packages/shell/bash-local/src/index.ts b/packages/shell/bash-local/src/index.ts
+index 54002a64..0ce8b880 100644
+--- a/packages/shell/bash-local/src/index.ts
++++ b/packages/shell/bash-local/src/index.ts
+@@ -5,7 +5,9 @@
+  * explicit argv. This executor owns command defaulting, deadlines and cause
+  * classification, the model-friendly terminal environment, and the model-facing
+  * stdout/stderr merge for background reads. Execution policy belongs in
+- * `tools/pre-execute` or a sandboxing executor.
++ * `tools/pre-execute` or a sandboxing executor; this executor never confines,
++ * but it still reports the deployment's default policy mode so permission
++ * consumers can compose over it.
+  * @module @deepseek-ai/dsh-bash-local
+  */
+ 
+@@ -14,6 +16,8 @@ import { Context } from '@deepseek-ai/cordis'
+ import z from '@deepseek-ai/schemastery'
+ import { ShellExecutor } from '@deepseek-ai/dsh-shell'
+ import type { ShellExecRequest, ShellExecSpec, ShellExecution, ShellProcess, ShellProcessRead, ShellRunResult, CollectedOutput } from '@deepseek-ai/dsh-shell'
++import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
++import type {} from '@deepseek-ai/dsh-sandbox-policy'
+ import type { SubprocessCollect, SubprocessHandle, SubprocessOutputReader, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+ import { clampTimeout, deadline, MAX_TIMER_DELAY_MS, timeoutOf } from '@deepseek-ai/dsh-timeout'
+ 
+@@ -95,7 +99,10 @@ export function assertServiceableBashConfig(config: Config): void {
+  * composition teardown) even across an executor reload.
+  */
+ export class LocalBashExecutor extends ShellExecutor {
+-  static inject = ['subprocess']
++  static inject = ['subprocess', 'sandboxPolicy']
++
++  /** The deployment's default policy mode, reported as the capability fact. */
++  private readonly defaultMode: SandboxMode
+ 
+   static Config = z.object({
+     cwd: z.string().volatile(),
+@@ -108,6 +115,17 @@ export class LocalBashExecutor extends ShellExecutor {
+ 
+   constructor(ctx: Context, readonly config: Config) {
+     super(ctx)
++    // This executor never confines, but it still reports the deployment's
++    // default policy mode: permission consumers (dsh-permission-presets)
++    // derive their default preset from `ctx.shell.sandboxMode`, and
++    // composing them over an executor that reports nothing is a
++    // misconfiguration.
++    this.defaultMode = ctx.sandboxPolicy.defaultMode
++  }
++
++  /** The default policy mode this executor executes under (never confining). */
++  override get sandboxMode(): SandboxMode {
++    return this.defaultMode
+   }
+ 
+   /**
+diff --git a/packages/shell/bash-local/tests/executor.spec.ts b/packages/shell/bash-local/tests/executor.spec.ts
+index 84ce1381..28421866 100644
+--- a/packages/shell/bash-local/tests/executor.spec.ts
++++ b/packages/shell/bash-local/tests/executor.spec.ts
+@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+ import { afterAll, describe, expect, it, vi } from 'vitest'
+ import { Context } from '@deepseek-ai/cordis'
++import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
++import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+ import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
+ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+ import SubprocessRuntime from '@deepseek-ai/dsh-subprocess'
+@@ -31,6 +33,8 @@ async function setup(config: Parameters<typeof LocalBashExecutor.Config>[0] = {}
+   const ctx = new Context()
+   await ctx.plugin(LocalSubprocessRuntime)
+   ;(ctx.subprocess as LocalSubprocessRuntime).internals = { spillDir }
++  await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access', workspaceRoot: process.cwd() })
+   // A short kill grace via the REAL config path, so escalation tests stay fast.
+   await ctx.plugin(LocalBashExecutor, { graceMs: 200, ...config })
+   const bash = ctx.shell as LocalBashExecutor
+@@ -461,6 +465,8 @@ describe('process lifecycle ownership (the subprocess service, not the executor)
+     const ctx = new Context()
+     const managerFiber = await ctx.plugin(LocalSubprocessRuntime)
+     ;(ctx.subprocess as LocalSubprocessRuntime).internals = { spillDir }
++    await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access', workspaceRoot: process.cwd() })
+     const executorFiber = await ctx.plugin(LocalBashExecutor, { graceMs: 200 })
+     const bash = ctx.shell as LocalBashExecutor
+ 
+@@ -488,6 +494,8 @@ describe('process lifecycle ownership (the subprocess service, not the executor)
+     const ctx = new Context()
+     const managerFiber = await ctx.plugin(LocalSubprocessRuntime)
+     ;(ctx.subprocess as LocalSubprocessRuntime).internals = { spillDir }
++    await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access', workspaceRoot: process.cwd() })
+     await ctx.plugin(LocalBashExecutor, { graceMs: 200 })
+     const bash = ctx.shell as LocalBashExecutor
+ 
+@@ -533,6 +541,8 @@ describe('cancellation against a hanging backend', () => {
+   it('a caller abort before the deadline stays the first cause when the process outlives the deadline', async () => {
+     const ctx = new Context()
+     const subprocess = new HangingSubprocessRuntime(ctx)
++    await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access', workspaceRoot: process.cwd() })
+     await ctx.plugin(LocalBashExecutor)
+     const controller = new AbortController()
+     const ex = (await ctx.shell.execute(ctx.shell.resolve({ command: 'sleep 30', timeoutMs: 20, signal: controller.signal })))
+diff --git a/packages/shell/bash-local/tests/settings.spec.ts b/packages/shell/bash-local/tests/settings.spec.ts
+index 417eb8d1..49790428 100644
+--- a/packages/shell/bash-local/tests/settings.spec.ts
++++ b/packages/shell/bash-local/tests/settings.spec.ts
+@@ -1,6 +1,8 @@
+ /** Live executor configuration through Loader updates. */
+ import { expect, it, onTestFinished } from 'vitest'
+ import { Context } from '@deepseek-ai/cordis'
++import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
++import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+ import { LocalBashExecutor } from '../src/index.ts'
+ import { liveConfig } from '../../../settings/settings/tests/live-config.ts'
+@@ -9,6 +11,8 @@ it('uses changed budgets for later commands without remounting the executor', as
+   const ctx = new Context()
+   onTestFinished(() => ctx.fiber.dispose())
+   await ctx.plugin(LocalSubprocessRuntime)
++  await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access', workspaceRoot: process.cwd() })
+   const live = await liveConfig(ctx, LocalBashExecutor, { timeoutMs: 60_000 })
+   const before = live.fiber
+   await live.update({ timeoutMs: 5_000, maxOutputBytes: 1_024 })
+diff --git a/packages/shell/bash-local/tsconfig.json b/packages/shell/bash-local/tsconfig.json
+index 3b9b48ce..10c1a82a 100644
+--- a/packages/shell/bash-local/tsconfig.json
++++ b/packages/shell/bash-local/tsconfig.json
+@@ -23,6 +23,12 @@
+     {
+       "path": "../../util/timeout"
+     },
++    {
++      "path": "../../sandbox/sandbox"
++    },
++    {
++      "path": "../../sandbox/sandbox-policy"
++    },
+     {
+       "path": "../../shell/shell"
+     },
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 27654927..1dd9dc25 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -6901,9 +6901,6 @@ importers:
+       react-dom:
+         specifier: ^18.2.0
+         version: 18.3.1(react@18.3.1)
+-      xlsx:
+-        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+-        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+       yaml:
+         specifier: ^2.9.0
+         version: 2.9.0
+@@ -17089,6 +17086,9 @@ importers:
+ 
+   packages/shell/bash-local:
+     dependencies:
++      '@deepseek-ai/dsh-sandbox':
++        specifier: workspace:*
++        version: link:../../sandbox/sandbox
+       '@deepseek-ai/schemastery':
+         specifier: link:../../../vendor/schemastery
+         version: link:../../../vendor/schemastery
+@@ -17096,6 +17096,12 @@ importers:
+       '@deepseek-ai/cordis':
+         specifier: workspace:~
+         version: link:../../../vendor/cordis
++      '@deepseek-ai/dsh-sandbox-policy':
++        specifier: workspace:*
++        version: link:../../sandbox/sandbox-policy
++      '@deepseek-ai/dsh-session-projection':
++        specifier: workspace:*
++        version: link:../../session/session-projection
+       '@deepseek-ai/dsh-shell':
+         specifier: workspace:*
+         version: link:../shell
+@@ -28396,12 +28402,6 @@ packages:
+     resolution: {integrity: sha512-Hl0ZOAs672vg+06kfujwRhoS6/jehvULrlFkuF2dRu6pHgA8U06h3xqNIqNNU1LTXPcedxByAR4GS6pwQK0mgA==}
+     engines: {node: '>=20'}
+ 
+-  xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz:
+-    resolution: {integrity: sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==, tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
+-    version: 0.20.3
+-    engines: {node: '>=0.8'}
+-    hasBin: true
+-
+   xml-name-validator@5.0.0:
+     resolution: {integrity: sha512-EvGK8EJ3DhaHfbRlETOWAS5pO9MZITeauHKJyb8wyajUfQUenkIg2MvLDTZ4T/TgIcm3HU0TFBgWWboAZ30UHg==}
+     engines: {node: '>=18'}
+@@ -36421,8 +36421,6 @@ snapshots:
+       is-wsl: 3.1.1
+       powershell-utils: 0.1.0
+ 
+-  xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz: {}
+-
+   xml-name-validator@5.0.0: {}
+ 
+   xml-naming@0.1.0: {}
